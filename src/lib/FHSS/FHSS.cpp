@@ -20,10 +20,18 @@ const fhss_config_t domains[] = {
     {"EU433",  FREQ_HZ_TO_REG_VAL(433100000), FREQ_HZ_TO_REG_VAL(434450000), 3, 434000000},
     {"US433",  FREQ_HZ_TO_REG_VAL(433250000), FREQ_HZ_TO_REG_VAL(438000000), 8, 434000000},
     {"US433W",  FREQ_HZ_TO_REG_VAL(423500000), FREQ_HZ_TO_REG_VAL(438000000), 20, 434000000},
+#if defined(DCUSTOM_FREQ_MIN) && defined(DCUSTOM_FREQ_MAX) && defined(DCUSTOM_FREQ_HOPS) && defined(DCUSTOM_FREQ_INIT)
+    {DCUSTOM_DOMAIN_NAME, FREQ_HZ_TO_REG_VAL(DCUSTOM_FREQ_MIN), FREQ_HZ_TO_REG_VAL(DCUSTOM_FREQ_MAX), DCUSTOM_FREQ_HOPS, DCUSTOM_FREQ_INIT},
+#endif
 };
 
 #if defined(RADIO_LR1121)
 const fhss_config_t domainsDualBand[] = {
+#if defined(DLR1121_SBAND_ENABLED) && defined(DCUSTOM_FREQ_MIN) && defined(DCUSTOM_FREQ_MAX) && defined(DCUSTOM_FREQ_HOPS) && defined(DCUSTOM_FREQ_INIT)
+    // Custom S-Band or other secondary band configuration
+    {DCUSTOM_DOMAIN_NAME, FREQ_HZ_TO_REG_VAL(DCUSTOM_FREQ_MIN), FREQ_HZ_TO_REG_VAL(DCUSTOM_FREQ_MAX), DCUSTOM_FREQ_HOPS, DCUSTOM_FREQ_INIT}
+#else
+    // Standard 2.4 GHz ISM band
     {
     #if defined(Regulatory_Domain_EU_CE_2400)
         "CE_LBT",
@@ -31,6 +39,7 @@ const fhss_config_t domainsDualBand[] = {
         "ISM2G4",
     #endif
     FREQ_HZ_TO_REG_VAL(2400400000), FREQ_HZ_TO_REG_VAL(2479400000), 80, 2440000000}
+#endif
 };
 #endif
 
