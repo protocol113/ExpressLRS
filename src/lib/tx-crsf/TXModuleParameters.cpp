@@ -1132,7 +1132,7 @@ void TXModuleEndpoint::registerParameters()
       luaCustomFreqPreset.value = 5;
     }, luaCustomFreqFolder.common.id);
 
-    registerParameter(&luaCustomFreqApply, [](propertiesCommon *item, uint8_t arg) {
+    registerParameter(&luaCustomFreqApply, [this](propertiesCommon *item, uint8_t arg) {
       commandParameter *cmd = (commandParameter *)item;
       if (arg == lcsClick) {
         if (connectionState == connected) {

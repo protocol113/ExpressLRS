@@ -1,5 +1,4 @@
--DMY_BINDING_PHRASE="bernie"
+-DMY_BINDING_PHRASE="berniegem"
 -DRegulatory_Domain_ISM_2400
 -DRegulatory_Domain_FCC_915
 -DAUTO_WIFI_ON_INTERVAL="60"
--DLOCK_ON_FIRST_CONNECTION
