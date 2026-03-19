@@ -26,9 +26,9 @@ const fhss_config_t domains[] = {
 #if defined(RADIO_LR1121)
 const fhss_config_t domainsDualBand[] = {
     {
-    // WIDEBAND S-BAND: 1.9-2.1GHz (full LR1121 S-band range)
-    "SBAND19-21",
-    FREQ_HZ_TO_REG_VAL(1900000000), FREQ_HZ_TO_REG_VAL(2100000000), 80, 2000000000}
+    // WIDEBAND S-BAND: 1.9-2.2GHz (full LR1121 S-band range)
+    "SBAND19-22",
+    FREQ_HZ_TO_REG_VAL(1900000000), FREQ_HZ_TO_REG_VAL(2200000000), 80, 2050000000}
 };
 #endif
 
