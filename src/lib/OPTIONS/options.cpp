@@ -84,6 +84,11 @@ void saveOptions(Stream &stream, bool customised)
     doc["rcvr-uart-baud"] = firmwareOptions.uart_baud;
     doc["lock-on-first-connection"] = firmwareOptions.lock_on_first_connection;
     doc["dji-permanently-armed"] = firmwareOptions.dji_permanently_armed;
+    // Custom frequency settings for RX
+    doc["custom-freq-enabled"] = firmwareOptions.customFreqEnabled;
+    doc["custom-freq-start"] = firmwareOptions.customFreqStart;
+    doc["custom-freq-stop"] = firmwareOptions.customFreqStop;
+    doc["custom-freq-count"] = firmwareOptions.customFreqCount;
     #endif
     doc["is-airport"] = firmwareOptions.is_airport;
     doc["domain"] = firmwareOptions.domain;
@@ -200,6 +205,11 @@ static void options_LoadFromFlashOrFile(EspFlashStream &strmFlash)
     #endif
     firmwareOptions.lock_on_first_connection = doc["lock-on-first-connection"] | true;
     firmwareOptions.dji_permanently_armed = doc["dji-permanently-armed"] | false;
+    // Custom frequency settings for RX
+    firmwareOptions.customFreqEnabled = doc["custom-freq-enabled"] | false;
+    firmwareOptions.customFreqStart = doc["custom-freq-start"] | 900000000U;
+    firmwareOptions.customFreqStop = doc["custom-freq-stop"] | 930000000U;
+    firmwareOptions.customFreqCount = doc["custom-freq-count"] | 40;
     #endif
     firmwareOptions.domain = doc["domain"] | 0;
     firmwareOptions.flash_discriminator = doc["flash-discriminator"] | 0U;

@@ -12,25 +12,23 @@
 #endif
 
 const fhss_config_t domains[] = {
-    {"AU915",  FREQ_HZ_TO_REG_VAL(915500000), FREQ_HZ_TO_REG_VAL(926900000), 20, 921000000},
-    {"FCC915", FREQ_HZ_TO_REG_VAL(903500000), FREQ_HZ_TO_REG_VAL(926900000), 40, 915000000},
-    {"EU868",  FREQ_HZ_TO_REG_VAL(863275000), FREQ_HZ_TO_REG_VAL(869575000), 13, 868000000},
-    {"IN866",  FREQ_HZ_TO_REG_VAL(865375000), FREQ_HZ_TO_REG_VAL(866950000), 4, 866000000},
-    {"AU433",  FREQ_HZ_TO_REG_VAL(433420000), FREQ_HZ_TO_REG_VAL(434420000), 3, 434000000},
-    {"EU433",  FREQ_HZ_TO_REG_VAL(433100000), FREQ_HZ_TO_REG_VAL(434450000), 3, 434000000},
-    {"US433",  FREQ_HZ_TO_REG_VAL(433250000), FREQ_HZ_TO_REG_VAL(438000000), 8, 434000000},
-    {"US433W",  FREQ_HZ_TO_REG_VAL(423500000), FREQ_HZ_TO_REG_VAL(438000000), 20, 434000000},
+    // WIDEBAND: 700-960MHz for maximum frequency diversity
+    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
+    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
+    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
+    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
+    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
+    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
+    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
+    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
 };
 
 #if defined(RADIO_LR1121)
 const fhss_config_t domainsDualBand[] = {
     {
-    #if defined(Regulatory_Domain_EU_CE_2400)
-        "CE_LBT",
-    #else
-        "ISM2G4",
-    #endif
-    FREQ_HZ_TO_REG_VAL(2400400000), FREQ_HZ_TO_REG_VAL(2479400000), 80, 2440000000}
+    // WIDEBAND S-BAND: 1.9-2.1GHz (full LR1121 S-band range)
+    "SBAND19-21",
+    FREQ_HZ_TO_REG_VAL(1900000000), FREQ_HZ_TO_REG_VAL(2100000000), 80, 2000000000}
 };
 #endif
 
@@ -42,9 +40,9 @@ const fhss_config_t domains[] = {
     #if defined(Regulatory_Domain_EU_CE_2400)
         "CE_LBT",
     #elif defined(Regulatory_Domain_ISM_2400)
-        "ISM2G4",
+        "CUST2G2",
     #endif
-    FREQ_HZ_TO_REG_VAL(2400400000), FREQ_HZ_TO_REG_VAL(2479400000), 80, 2440000000}
+    FREQ_HZ_TO_REG_VAL(2200000000), FREQ_HZ_TO_REG_VAL(2300000000), 80, 2250000000}
 };
 #endif
 
@@ -170,3 +168,61 @@ bool isUsingPrimaryFreqBand()
 {
     return FHSSusePrimaryFreqBand;
 }
+
+#if defined(RADIO_SX127X) || defined(RADIO_LR1121)
+// Custom frequency configuration for runtime changes via Lua
+static fhss_config_t customDomain = {"CUSTOM", 0, 0, 0, 0};
+static bool customFreqEnabled = false;
+
+void FHSSsetCustomFrequency(uint32_t freqStart, uint32_t freqStop, uint8_t freqCount)
+{
+    // Validate parameters
+    if (freqCount < 4 || freqCount > 80) {
+        DBGLN("Custom freq: invalid channel count %u", freqCount);
+        return;
+    }
+    if (freqStop <= freqStart) {
+        DBGLN("Custom freq: stop must be > start");
+        return;
+    }
+
+    // Configure custom domain
+    customDomain.freq_start = FREQ_HZ_TO_REG_VAL(freqStart);
+    customDomain.freq_stop = FREQ_HZ_TO_REG_VAL(freqStop);
+    customDomain.freq_count = freqCount;
+    customDomain.freq_center = (freqStart + freqStop) / 2;
+
+    // Switch to custom domain
+    FHSSconfig = &customDomain;
+    customFreqEnabled = true;
+
+    // Recalculate FHSS parameters
+    sync_channel = FHSSconfig->freq_count / 2;
+    freq_spread = (FHSSconfig->freq_stop - FHSSconfig->freq_start) * FREQ_SPREAD_SCALE / (FHSSconfig->freq_count - 1);
+    primaryBandCount = (FHSS_SEQUENCE_LEN / FHSSconfig->freq_count) * FHSSconfig->freq_count;
+
+    DBGLN("Custom Domain: %u-%u MHz, %u channels, sync=%u",
+        freqStart / 1000000, freqStop / 1000000, FHSSconfig->freq_count, sync_channel);
+}
+
+void FHSSdisableCustomFrequency()
+{
+    if (customFreqEnabled) {
+        // Restore default domain
+        FHSSconfig = &domains[firmwareOptions.domain];
+        customFreqEnabled = false;
+
+        // Recalculate FHSS parameters
+        sync_channel = FHSSconfig->freq_count / 2;
+        freq_spread = (FHSSconfig->freq_stop - FHSSconfig->freq_start) * FREQ_SPREAD_SCALE / (FHSSconfig->freq_count - 1);
+        primaryBandCount = (FHSS_SEQUENCE_LEN / FHSSconfig->freq_count) * FHSSconfig->freq_count;
+
+        DBGLN("Restored default domain %s", FHSSconfig->domain);
+    }
+}
+
+bool FHSSisCustomFrequencyEnabled()
+{
+    return customFreqEnabled;
+}
+#endif

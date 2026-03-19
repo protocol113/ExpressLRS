@@ -318,6 +318,50 @@ static stringParameter luaBackpackVersion = {
 
 //---------------------------- BACKPACK ------------------
 
+//---------------------------- CUSTOM FREQUENCY ------------------
+static folderParameter luaCustomFreqFolder = {
+    {"Custom Freq", CRSF_FOLDER},
+};
+
+static constexpr char luastrFreqPresets[] = "Off;900 ISM;868 EU;915 US;850 Custom;Custom";
+static selectionParameter luaCustomFreqPreset = {
+    {"Freq Preset", CRSF_TEXT_SELECTION},
+    0, // value
+    luastrFreqPresets,
+    STR_EMPTYSPACE
+};
+
+// Frequency values displayed in MHz with 1 decimal (e.g., 900.0 MHz = 9000)
+static int16Parameter luaCustomFreqStartMHz = {
+    {"Start Freq", CRSF_UINT16},
+    {.u = {9000, 4000, 28000}}, // value, min (400MHz), max (2800MHz) in 0.1 MHz units
+    "0.1MHz"
+};
+
+static int16Parameter luaCustomFreqStopMHz = {
+    {"Stop Freq", CRSF_UINT16},
+    {.u = {9300, 4000, 28000}}, // value, min (400MHz), max (2800MHz) in 0.1 MHz units
+    "0.1MHz"
+};
+
+static int8Parameter luaCustomFreqCount = {
+    {"Channels", CRSF_UINT8},
+    {.u = {40, 4, 80}}, // value, min, max
+    STR_EMPTYSPACE
+};
+
+static commandParameter luaCustomFreqApply = {
+    {"Apply & Rebind", CRSF_COMMAND},
+    lcsIdle, // step
+    STR_EMPTYSPACE
+};
+
+static stringParameter luaCustomFreqInfo = {
+    {"[Requires rebind]", CRSF_INFO},
+    STR_EMPTYSPACE
+};
+//---------------------------- CUSTOM FREQUENCY ------------------
+
 extern TxConfig config;
 extern void VtxTriggerSend();
 extern void ResetPower();
@@ -329,6 +373,8 @@ extern bool TxBackpackWiFiReadyToSend;
 extern bool VRxBackpackWiFiReadyToSend;
 extern unsigned long rebootTime;
 extern void setWifiUpdateMode();
+extern void FHSSsetCustomFrequency(uint32_t freqStart, uint32_t freqStop, uint8_t freqCount);
+extern void FHSSdisableCustomFrequency();
 
 void TXModuleEndpoint::supressCriticalErrors()
 {
@@ -762,17 +808,22 @@ static void recalculatePacketRateOptions(int minInterval)
         if (rateAllowed)
         {
             const auto radio_type = get_elrs_airRateConfig(rate)->radio_type;
+            // Always show 900MHz rates (including 25Hz) regardless of RF mode
+            // For other modes, filter based on current RF mode selection
+            bool is900Rate = (radio_type == RADIO_TYPE_LR1121_GFSK_900 || radio_type == RADIO_TYPE_LR1121_LORA_900);
             if (rfMode == RF_MODE_900)
             {
-                rateAllowed = radio_type == RADIO_TYPE_LR1121_GFSK_900 || radio_type == RADIO_TYPE_LR1121_LORA_900;
+                rateAllowed = is900Rate;
             }
             if (rfMode == RF_MODE_2G4)
             {
-                rateAllowed = radio_type == RADIO_TYPE_LR1121_GFSK_2G4 || radio_type == RADIO_TYPE_LR1121_LORA_2G4;
+                // Show 2.4GHz rates AND 900MHz rates (so 25Hz is always available)
+                rateAllowed = (radio_type == RADIO_TYPE_LR1121_GFSK_2G4 || radio_type == RADIO_TYPE_LR1121_LORA_2G4) || is900Rate;
             }
             if (rfMode == RF_MODE_DUAL)
             {
-                rateAllowed = radio_type == RADIO_TYPE_LR1121_LORA_DUAL;
+                // Show dual-band rates AND 900MHz rates (so 25Hz is always available)
+                rateAllowed = (radio_type == RADIO_TYPE_LR1121_LORA_DUAL) || is900Rate;
             }
         }
 #endif
@@ -1007,6 +1058,114 @@ void TXModuleEndpoint::registerParameters()
   registerParameter(&luaBLEJoystick, wifiBleCallback);
   #endif
 
+  // Custom Frequency folder - only for sub-GHz radios
+  #if defined(RADIO_SX127X) || defined(RADIO_LR1121)
+  if (HAS_RADIO) {
+    registerParameter(&luaCustomFreqFolder);
+    registerParameter(&luaCustomFreqPreset, [](propertiesCommon *item, uint8_t arg) {
+      // Preset options: 0=Off, 1=900 ISM, 2=868 EU, 3=915 US, 4=850 Custom, 5=Custom
+      uint32_t freqStart = 0, freqStop = 0;
+      uint8_t freqCount = 40;
+      bool enabled = true;
+
+      switch (arg) {
+        case 0: // Off - use default domain
+          enabled = false;
+          break;
+        case 1: // 900 ISM (900-930 MHz)
+          freqStart = 900000000;
+          freqStop = 930000000;
+          freqCount = 40;
+          break;
+        case 2: // 868 EU (863-870 MHz)
+          freqStart = 863000000;
+          freqStop = 870000000;
+          freqCount = 13;
+          break;
+        case 3: // 915 US (902-928 MHz)
+          freqStart = 902000000;
+          freqStop = 928000000;
+          freqCount = 40;
+          break;
+        case 4: // 850 Custom (840-860 MHz)
+          freqStart = 840000000;
+          freqStop = 860000000;
+          freqCount = 40;
+          break;
+        case 5: // Custom - use current values from UI
+          freqStart = luaCustomFreqStartMHz.properties.u.value * 100000UL; // 0.1MHz to Hz
+          freqStop = luaCustomFreqStopMHz.properties.u.value * 100000UL;
+          freqCount = luaCustomFreqCount.properties.u.value;
+          break;
+      }
+
+      if (enabled) {
+        config.SetCustomFreqEnabled(true);
+        config.SetCustomFreqStart(freqStart);
+        config.SetCustomFreqStop(freqStop);
+        config.SetCustomFreqCount(freqCount);
+        // Update UI values to reflect preset
+        luaCustomFreqStartMHz.properties.u.value = freqStart / 100000UL;
+        luaCustomFreqStopMHz.properties.u.value = freqStop / 100000UL;
+        luaCustomFreqCount.properties.u.value = freqCount;
+      } else {
+        config.SetCustomFreqEnabled(false);
+      }
+    }, luaCustomFreqFolder.common.id);
+
+    registerParameter(&luaCustomFreqStartMHz, [](propertiesCommon *item, uint8_t arg) {
+      // arg is not used for UINT16, value is in the parameter
+      uint32_t freqHz = luaCustomFreqStartMHz.properties.u.value * 100000UL;
+      config.SetCustomFreqStart(freqHz);
+      // Set preset to Custom when manually editing
+      luaCustomFreqPreset.value = 5;
+    }, luaCustomFreqFolder.common.id);
+
+    registerParameter(&luaCustomFreqStopMHz, [](propertiesCommon *item, uint8_t arg) {
+      uint32_t freqHz = luaCustomFreqStopMHz.properties.u.value * 100000UL;
+      config.SetCustomFreqStop(freqHz);
+      luaCustomFreqPreset.value = 5;
+    }, luaCustomFreqFolder.common.id);
+
+    registerParameter(&luaCustomFreqCount, [](propertiesCommon *item, uint8_t arg) {
+      config.SetCustomFreqCount(luaCustomFreqCount.properties.u.value);
+      luaCustomFreqPreset.value = 5;
+    }, luaCustomFreqFolder.common.id);
+
+    registerParameter(&luaCustomFreqApply, [](propertiesCommon *item, uint8_t arg) {
+      commandParameter *cmd = (commandParameter *)item;
+      if (arg == lcsClick) {
+        if (connectionState == connected) {
+          sendCommandResponse(cmd, lcsAskConfirm, "Apply freq & rebind?");
+        } else {
+          // Not connected, apply directly
+          if (config.GetCustomFreqEnabled()) {
+            FHSSsetCustomFrequency(config.GetCustomFreqStart(), config.GetCustomFreqStop(), config.GetCustomFreqCount());
+          } else {
+            FHSSdisableCustomFrequency();
+          }
+          EnterBindingModeSafely();
+          sendCommandResponse(cmd, lcsExecuting, "Applying...");
+        }
+      } else if (arg == lcsConfirmed) {
+        if (config.GetCustomFreqEnabled()) {
+          FHSSsetCustomFrequency(config.GetCustomFreqStart(), config.GetCustomFreqStop(), config.GetCustomFreqCount());
+        } else {
+          FHSSdisableCustomFrequency();
+        }
+        EnterBindingModeSafely();
+        sendCommandResponse(cmd, lcsExecuting, "Applying...");
+      } else if (arg == lcsCancel) {
+        sendCommandResponse(cmd, lcsIdle, STR_EMPTYSPACE);
+      } else {
+        sendCommandResponse(cmd, cmd->step, cmd->info);
+      }
+    }, luaCustomFreqFolder.common.id);
+
+    registerParameter(&luaCustomFreqInfo, nullptr, luaCustomFreqFolder.common.id);
+  }
+  #endif
+
   if (HAS_RADIO) {
     registerParameter(&luaBind, sendCallback);
   }
@@ -1095,5 +1254,14 @@ void TXModuleEndpoint::updateParameters()
     setTextSelectionValue(&luaBackpackTelemetry, config.GetBackpackDisable() ? 0 : config.GetBackpackTlmMode());
     setStringValue(&luaBackpackVersion, backpackVersion);
   }
+
+  // Update custom frequency UI from config
+  #if defined(RADIO_SX127X) || defined(RADIO_LR1121)
+  setTextSelectionValue(&luaCustomFreqPreset, config.GetCustomFreqEnabled() ? 5 : 0); // 5=Custom, 0=Off
+  luaCustomFreqStartMHz.properties.u.value = config.GetCustomFreqStart() / 100000UL;
+  luaCustomFreqStopMHz.properties.u.value = config.GetCustomFreqStop() / 100000UL;
+  luaCustomFreqCount.properties.u.value = config.GetCustomFreqCount();
+  #endif
+
   updateFolderNames();
 }

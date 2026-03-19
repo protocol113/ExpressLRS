@@ -172,7 +172,7 @@ static inline uint32_t FHSSGeminiFreq(uint8_t FHSSsequenceIdx)
 {
     uint32_t freq;
     uint32_t numfhss = FHSSgetChannelCount();
-    uint8_t offSetIdx = (FHSSsequenceIdx + (numfhss / 2)) % numfhss; 
+    uint8_t offSetIdx = (FHSSsequenceIdx + (numfhss / 2)) % numfhss;
 
     if (FHSSusePrimaryFreqBand)
     {
@@ -224,3 +224,10 @@ static inline uint32_t FHSSgetInitialGeminiFreq()
         }
     }
 }
+
+// Custom frequency configuration functions (sub-GHz radios only)
+#if defined(RADIO_SX127X) || defined(RADIO_LR1121)
+void FHSSsetCustomFrequency(uint32_t freqStart, uint32_t freqStop, uint8_t freqCount);
+void FHSSdisableCustomFrequency();
+bool FHSSisCustomFrequencyEnabled();
+#endif

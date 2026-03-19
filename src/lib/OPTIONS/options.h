@@ -36,6 +36,10 @@ typedef struct _options {
     bool        lock_on_first_connection:1;
     bool        dji_permanently_armed:1;
     bool        is_airport:1;
+    bool        customFreqEnabled:1;    // Custom frequency enabled
+    uint32_t    customFreqStart;        // Custom frequency start in Hz
+    uint32_t    customFreqStop;         // Custom frequency stop in Hz
+    uint8_t     customFreqCount;        // Custom frequency channel count
 #endif
 #if defined(TARGET_TX) || defined(UNIT_TEST)
     uint32_t    tlm_report_interval;

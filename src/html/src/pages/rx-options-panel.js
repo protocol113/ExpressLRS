@@ -12,6 +12,10 @@ class RxOptionsPanel extends LitElement {
     @state() accessor lockOnFirst
     @state() accessor modelId
     @state() accessor forceTlmOff
+    @state() accessor customFreqEnabled
+    @state() accessor customFreqStart
+    @state() accessor customFreqStop
+    @state() accessor customFreqCount
 
     createRenderRoot() {
         this.domain = elrsState.options.domain
@@ -19,6 +23,11 @@ class RxOptionsPanel extends LitElement {
         this.enableModelMatch = elrsState.config.modelid!==undefined && elrsState.config.modelid !== 255
         this.modelId = elrsState.config.modelid===undefined ? 0 : elrsState.config.modelid
         this.forceTlmOff = elrsState.config['force-tlm']
+        // Custom frequency settings
+        this.customFreqEnabled = elrsState.options['custom-freq-enabled'] || false
+        this.customFreqStart = elrsState.options['custom-freq-start'] || 900000000
+        this.customFreqStop = elrsState.options['custom-freq-stop'] || 930000000
+        this.customFreqCount = elrsState.options['custom-freq-count'] || 40
         this.save = this.save.bind(this)
         return this
     }
@@ -33,7 +42,7 @@ class RxOptionsPanel extends LitElement {
                     <!-- FEATURE:HAS_SUBGHZ -->
                     <div class="mui-select">
                         <select id="domain" @change="${(e) => this.domain = parseInt(e.target.value)}">
-                            ${_renderOptions(['AU915','FCC915','EU868','IN866','AU433','EU433','US433','US433-Wide'], this.domain)}
+                            ${_renderOptions(['FCC915','CUST900','EU868','IN866','AU433','EU433','US433','US433-Wide'], this.domain)}
                         </select>
                         <label for="domain">Regulatory domain</label>
                     </div>
@@ -83,6 +92,47 @@ class RxOptionsPanel extends LitElement {
                         <label for="force-tlm">Force telemetry OFF on this receiver</label>
                     </div>
 
+                    <!-- FEATURE:HAS_SUBGHZ -->
+                    <h2>Custom Frequency (Advanced)</h2>
+                    Override the regulatory domain with custom frequency settings. <b>Both TX and RX must use matching frequencies.</b>
+                    Use this to operate on non-standard frequencies for specialized applications.
+                    <br/>
+                    <div class="mui-checkbox">
+                        <input id='custom-freq-enabled' type='checkbox'
+                               ?checked="${this.customFreqEnabled}"
+                               @change="${(e) => this.customFreqEnabled = e.target.checked}"
+                        />
+                        <label for="custom-freq-enabled">Enable Custom Frequency</label>
+                    </div>
+                    ${this.customFreqEnabled ? html`
+                    <div class="mui-textfield">
+                        <input id="custom-freq-start" type='number' required
+                               min="400000000" max="2500000000" step="100000"
+                               @change="${(e) => this.customFreqStart = parseInt(e.target.value)}"
+                               .value="${this.customFreqStart}"
+                               @keypress="${_uintInput}"/>
+                        <label for="custom-freq-start">Start Frequency (Hz) - e.g. 900000000 for 900 MHz</label>
+                    </div>
+                    <div class="mui-textfield">
+                        <input id="custom-freq-stop" type='number' required
+                               min="400000000" max="2500000000" step="100000"
+                               @change="${(e) => this.customFreqStop = parseInt(e.target.value)}"
+                               .value="${this.customFreqStop}"
+                               @keypress="${_uintInput}"/>
+                        <label for="custom-freq-stop">Stop Frequency (Hz) - e.g. 930000000 for 930 MHz</label>
+                    </div>
+                    <div class="mui-textfield">
+                        <input id="custom-freq-count" type='number' required
+                               min="4" max="80"
+                               @change="${(e) => this.customFreqCount = parseInt(e.target.value)}"
+                               .value="${this.customFreqCount}"
+                               @keypress="${_uintInput}"/>
+                        <label for="custom-freq-count">Channel Count (4-80)</label>
+                    </div>
+                    <p><i>Common presets: 900 ISM (900-930MHz, 40ch), 868 EU (863-870MHz, 13ch), 915 US (902-928MHz, 40ch)</i></p>
+                    ` : ''}
+                    <!-- /FEATURE:HAS_SUBGHZ -->
+
                     <button class="mui-btn mui-btn--primary"
                             ?disabled="${!this.checkChanged()}"
                             @click="${this.save}"
@@ -107,6 +157,10 @@ class RxOptionsPanel extends LitElement {
             options: {
                 // FEATURE: HAS_SUBGHZ
                 'domain': this.domain,
+                'custom-freq-enabled': this.customFreqEnabled,
+                'custom-freq-start': this.customFreqStart,
+                'custom-freq-stop': this.customFreqStop,
+                'custom-freq-count': this.customFreqCount,
                 // /FEATURE: HAS_SUBGHZ
                 'lock-on-first-connection': this.lockOnFirst,
             },
@@ -125,6 +179,10 @@ class RxOptionsPanel extends LitElement {
         let changed = false
         // FEATURE: HAS_SUBGHZ
         changed |= this.domain !== elrsState.options['domain']
+        changed |= this.customFreqEnabled !== (elrsState.options['custom-freq-enabled'] || false)
+        changed |= this.customFreqStart !== (elrsState.options['custom-freq-start'] || 900000000)
+        changed |= this.customFreqStop !== (elrsState.options['custom-freq-stop'] || 930000000)
+        changed |= this.customFreqCount !== (elrsState.options['custom-freq-count'] || 40)
         // /FEATURE: HAS_SUBGHZ
         changed |= this.lockOnFirst !== elrsState.options['lock-on-first-connection']
         changed |= this.enableModelMatch && this.modelId !== elrsState.config['modelid']

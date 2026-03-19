@@ -215,6 +215,16 @@ void TxConfig::Load()
             m_config.backpackTlmMode = value8;
     }
 
+    // Load custom frequency settings (defaults already set, so missing keys are fine)
+    if (nvs_get_u8(handle, "customfreqen", &value8) == ESP_OK)
+        m_config.customFreq.enabled = value8;
+    if (nvs_get_u32(handle, "customfreqstart", &value) == ESP_OK)
+        m_config.customFreq.freqStart = value;
+    if (nvs_get_u32(handle, "customfreqstop", &value) == ESP_OK)
+        m_config.customFreq.freqStop = value;
+    if (nvs_get_u8(handle, "customfreqcnt", &value8) == ESP_OK)
+        m_config.customFreq.freqCount = value8;
+
     for(unsigned i=0; i<CONFIG_TX_MODEL_CNT; i++)
     {
         char model[10] = "model";
@@ -433,6 +443,11 @@ TxConfig::Commit()
         nvs_set_u8(handle, "dvraux", m_config.dvrAux);
         nvs_set_u8(handle, "dvrstartdelay", m_config.dvrStartDelay);
         nvs_set_u8(handle, "dvrstopdelay", m_config.dvrStopDelay);
+        // Custom frequency settings
+        nvs_set_u8(handle, "customfreqen", m_config.customFreq.enabled);
+        nvs_set_u32(handle, "customfreqstart", m_config.customFreq.freqStart);
+        nvs_set_u32(handle, "customfreqstop", m_config.customFreq.freqStop);
+        nvs_set_u8(handle, "customfreqcnt", m_config.customFreq.freqCount);
     }
     if (m_modified & EVENT_CONFIG_BUTTON_CHANGED)
     {
@@ -708,6 +723,46 @@ TxConfig::SetPTREnableChannel(uint8_t ptrEnableChannel)
 }
 
 void
+TxConfig::SetCustomFreqEnabled(bool enabled)
+{
+    if (m_config.customFreq.enabled != enabled)
+    {
+        m_config.customFreq.enabled = enabled;
+        m_modified |= EVENT_CONFIG_MAIN_CHANGED;
+    }
+}
+
+void
+TxConfig::SetCustomFreqStart(uint32_t freqStart)
+{
+    if (m_config.customFreq.freqStart != freqStart)
+    {
+        m_config.customFreq.freqStart = freqStart;
+        m_modified |= EVENT_CONFIG_MAIN_CHANGED;
+    }
+}
+
+void
+TxConfig::SetCustomFreqStop(uint32_t freqStop)
+{
+    if (m_config.customFreq.freqStop != freqStop)
+    {
+        m_config.customFreq.freqStop = freqStop;
+        m_modified |= EVENT_CONFIG_MAIN_CHANGED;
+    }
+}
+
+void
+TxConfig::SetCustomFreqCount(uint8_t freqCount)
+{
+    if (m_config.customFreq.freqCount != freqCount)
+    {
+        m_config.customFreq.freqCount = freqCount;
+        m_modified |= EVENT_CONFIG_MAIN_CHANGED;
+    }
+}
+
+void
 TxConfig::SetDefaults(bool commit)
 {
     // Reset everything to 0/false and then just set anything that zero is not appropriate
@@ -740,6 +795,12 @@ TxConfig::SetDefaults(bool commit)
         }
     };
     m_config.buttonColors[1].raw = default_actions2.raw;
+
+    // Set defaults for custom frequency (disabled, with sensible defaults if enabled)
+    m_config.customFreq.enabled = 0;
+    m_config.customFreq.freqStart = 900000000;  // 900 MHz
+    m_config.customFreq.freqStop = 930000000;   // 930 MHz
+    m_config.customFreq.freqCount = 40;
 
     for (unsigned i=0; i<CONFIG_TX_MODEL_CNT; i++)
     {
