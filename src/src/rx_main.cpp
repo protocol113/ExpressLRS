@@ -2009,15 +2009,6 @@ void setup()
 
         setupBindingFromConfig();
 
-        // Apply custom frequency settings from options before FHSS init
-        #if defined(RADIO_SX127X) || defined(RADIO_LR1121)
-        if (firmwareOptions.customFreqEnabled) {
-            FHSSsetCustomFrequency(firmwareOptions.customFreqStart,
-                                   firmwareOptions.customFreqStop,
-                                   firmwareOptions.customFreqCount);
-        }
-        #endif
-
         FHSSrandomiseFHSSsequence(uidMacSeedGet());
 
         setupRadio();

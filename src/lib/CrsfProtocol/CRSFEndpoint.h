@@ -89,10 +89,10 @@ protected:
      * @param origin The address of the requesting device
      * @param isElrs Boolean indicating if this is an ELRS-specific parameter
      * @param parameterType The type of parameter being updated
-     * @param parameterIndex The index of the parameter to update
-     * @param parameterArg The chunk number for multipart parameters or value for 'write' requests
+     * @param payload Pointer to the CRSF payload bytes for this request
+     * @param payloadLength Number of bytes in the CRSF payload
      */
-    void parameterUpdateReq(crsf_addr_e origin, bool isElrs, uint8_t parameterType, uint8_t parameterIndex, uint8_t parameterArg);
+    void parameterUpdateReq(crsf_addr_e origin, bool isElrs, uint8_t parameterType, const uint8_t *payload, uint8_t payloadLength);
 
     /**
      * Sends a command response back to the CRSF network.
@@ -197,6 +197,7 @@ private:
     static uint8_t *commandParameterToArray(const commandParameter *parameter, uint8_t *next);
     static uint8_t *int8ParameterToArray(const int8Parameter *parameter, uint8_t *next);
     static uint8_t *int16ParameterToArray(const int16Parameter *parameter, uint8_t *next);
+    static uint8_t *floatParameterToArray(const floatParameter *parameter, uint8_t *next);
     static uint8_t *stringParameterToArray(const stringParameter *parameter, uint8_t *next);
     uint8_t *folderParameterToArray(const folderParameter *parameter, uint8_t *next) const;
 

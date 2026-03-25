@@ -9,7 +9,9 @@
 #include "config.h"
 #include "helpers.h"
 #include "deferred.h"
+#include "crsf_protocol.h"
 #include "msptypes.h"
+#include <stdio.h>
 
 #define STR_LUA_ALLAUX         "AUX1;AUX2;AUX3;AUX4;AUX5;AUX6;AUX7;AUX8;AUX9;AUX10"
 
@@ -317,49 +319,416 @@ static stringParameter luaBackpackVersion = {
 
 //---------------------------- BACKPACK ------------------
 
-//---------------------------- CUSTOM FREQUENCY ------------------
-static folderParameter luaCustomFreqFolder = {
-    {"Custom Freq", CRSF_FOLDER},
+#if defined(RADIO_LR1121)
+typedef struct {
+    const char *label;
+    uint32_t startHz;
+    uint32_t stopHz;
+    uint8_t channelCount;
+} runtime_freq_preset_t;
+
+#if (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+#define CRSF_U32_INIT(value) (uint32_t)(value)
+#else
+#define CRSF_U32_INIT(value) (uint32_t)__builtin_bswap32((uint32_t)(value))
+#endif
+
+static constexpr runtime_freq_preset_t runtimeFreqPresets[] = {
+    {"Off", 0U, 0U, 0U},
+    {"FCC915", 903500000U, 926900000U, 40U},
+    {"AU915", 915500000U, 926900000U, 20U},
+    {"EU868", 863275000U, 869575000U, 13U},
+    {"TrainA", 840000000U, 860000000U, 32U},
+    {"Custom", 903500000U, 926900000U, 40U},
 };
 
-static constexpr char luastrFreqPresets[] = "Off;900 ISM;868 EU;915 US;850 Custom;Custom";
-static selectionParameter luaCustomFreqPreset = {
-    {"Freq Preset", CRSF_TEXT_SELECTION},
-    0, // value
-    luastrFreqPresets,
+static constexpr uint8_t RUNTIME_FREQ_PRESET_CUSTOM = ARRAY_SIZE(runtimeFreqPresets) - 1;
+static constexpr char runtimeFreqPresetOptions[] = "Off;FCC915;AU915;EU868;TrainA;Custom";
+#if defined(Regulatory_Domain_EU_CE_2400)
+static constexpr char runtimeHighFreqPresetOptions[] = "Off;CE_LBT;SBand;Train24;Custom";
+static constexpr const char *runtimeHighDefaultLabel = "CE_LBT";
+#else
+static constexpr char runtimeHighFreqPresetOptions[] = "Off;ISM2G4;SBand;Train24;Custom";
+static constexpr const char *runtimeHighDefaultLabel = "ISM2G4";
+#endif
+static constexpr runtime_freq_preset_t runtimeHighFreqPresets[] = {
+    {"Off", 0U, 0U, 0U},
+    {runtimeHighDefaultLabel, 2400400000U, 2479400000U, 80U},
+    {"SBand", 2300000000U, 2399000000U, 40U},
+    {"Train24", 2000000000U, 2100000000U, 40U},
+    {"Custom", 2400400000U, 2479400000U, 80U},
+};
+static constexpr uint8_t RUNTIME_HIGH_FREQ_PRESET_CUSTOM = ARRAY_SIZE(runtimeHighFreqPresets) - 1;
+static char runtimeFreqStatus[40] = "Active: stock";
+static char runtimeFreqCustomLabel[RUNTIME_FREQ_LABEL_LEN + 1] = "CUSTOM";
+static char runtimeHighFreqCustomLabel[RUNTIME_FREQ_LABEL_LEN + 1] = "CUSTOM2G4";
+
+static folderParameter luaRuntimeFreqFolder = {
+    {"Runtime Freq", CRSF_FOLDER},
+};
+
+static selectionParameter luaRuntimeFreqPreset = {
+    {"SubG Preset", CRSF_TEXT_SELECTION},
+    0,
+    runtimeFreqPresetOptions,
     STR_EMPTYSPACE
 };
 
-// Frequency values displayed in MHz with 1 decimal (e.g., 900.0 MHz = 9000)
-static int16Parameter luaCustomFreqStartMHz = {
-    {"Start Freq", CRSF_UINT16},
-    {.u = {9000, 4000, 28000}}, // value, min (400MHz), max (2800MHz) in 0.1 MHz units
-    "0.1MHz"
-};
-
-static int16Parameter luaCustomFreqStopMHz = {
-    {"Stop Freq", CRSF_UINT16},
-    {.u = {9300, 4000, 28000}}, // value, min (400MHz), max (2800MHz) in 0.1 MHz units
-    "0.1MHz"
-};
-
-static int8Parameter luaCustomFreqCount = {
-    {"Channels", CRSF_UINT8},
-    {.u = {40, 4, 80}}, // value, min, max
+static selectionParameter luaRuntimeFreqEnable = {
+    {"SubG Ovr", CRSF_TEXT_SELECTION},
+    0,
+    "Off;On",
     STR_EMPTYSPACE
 };
 
-static commandParameter luaCustomFreqApply = {
+static selectionParameter luaRuntimeFreqAutoCount = {
+    {"SubG AutoCh", CRSF_TEXT_SELECTION},
+    0,
+    "Off;On",
+    STR_EMPTYSPACE
+};
+
+static floatParameter luaRuntimeFreqStartMHz = {
+    {"SubG Start", CRSF_FLOAT},
+    {CRSF_U32_INIT(9035), CRSF_U32_INIT(7000), CRSF_U32_INIT(9600), CRSF_U32_INIT(9035), 1, CRSF_U32_INIT(5)},
+    "MHz"
+};
+
+static floatParameter luaRuntimeFreqStopMHz = {
+    {"SubG Stop", CRSF_FLOAT},
+    {CRSF_U32_INIT(9269), CRSF_U32_INIT(7000), CRSF_U32_INIT(9600), CRSF_U32_INIT(9269), 1, CRSF_U32_INIT(5)},
+    "MHz"
+};
+
+static int8Parameter luaRuntimeFreqCount = {
+    {"SubG Chans", CRSF_UINT8},
+    {.u = {40, 4, 80}},
+    STR_EMPTYSPACE
+};
+
+static selectionParameter luaRuntimeHighFreqPreset = {
+    {"High Preset", CRSF_TEXT_SELECTION},
+    0,
+    runtimeHighFreqPresetOptions,
+    STR_EMPTYSPACE
+};
+
+static selectionParameter luaRuntimeHighFreqEnable = {
+    {"High Ovr", CRSF_TEXT_SELECTION},
+    0,
+    "Off;On",
+    STR_EMPTYSPACE
+};
+
+static selectionParameter luaRuntimeHighFreqAutoCount = {
+    {"High AutoCh", CRSF_TEXT_SELECTION},
+    0,
+    "Off;On",
+    STR_EMPTYSPACE
+};
+
+static floatParameter luaRuntimeHighFreqStartMHz = {
+    {"High Start", CRSF_FLOAT},
+    {CRSF_U32_INIT(24004), CRSF_U32_INIT(19000), CRSF_U32_INIT(25000), CRSF_U32_INIT(24004), 1, CRSF_U32_INIT(5)},
+    "MHz"
+};
+
+static floatParameter luaRuntimeHighFreqStopMHz = {
+    {"High Stop", CRSF_FLOAT},
+    {CRSF_U32_INIT(24794), CRSF_U32_INIT(19000), CRSF_U32_INIT(25000), CRSF_U32_INIT(24794), 1, CRSF_U32_INIT(5)},
+    "MHz"
+};
+
+static int8Parameter luaRuntimeHighFreqCount = {
+    {"High Chans", CRSF_UINT8},
+    {.u = {80, 4, 80}},
+    STR_EMPTYSPACE
+};
+
+static commandParameter luaRuntimeFreqApply = {
     {"Apply & Rebind", CRSF_COMMAND},
-    lcsIdle, // step
+    lcsIdle,
     STR_EMPTYSPACE
 };
 
-static stringParameter luaCustomFreqInfo = {
-    {"[Requires rebind]", CRSF_INFO},
-    STR_EMPTYSPACE
+static stringParameter luaRuntimeFreqInfo = {
+    {"X-Band uses SubG + High", CRSF_INFO},
+    runtimeFreqStatus
 };
-//---------------------------- CUSTOM FREQUENCY ------------------
+
+static void formatRuntimeCustomLabel(char *target, char prefix, uint32_t startHz, uint32_t stopHz)
+{
+    const uint32_t startMHz10 = startHz / 100000U;
+    const uint32_t stopMHz10 = stopHz / 100000U;
+    snprintf(target, RUNTIME_FREQ_LABEL_LEN + 1, "%c%lu-%lu", prefix, (unsigned long)startMHz10, (unsigned long)stopMHz10);
+}
+
+static uint8_t calculateRuntimeChannelCount(uint32_t startHz, uint32_t stopHz, uint32_t targetSpacingHz)
+{
+    if (stopHz <= startHz || targetSpacingHz == 0U)
+    {
+        return 4U;
+    }
+
+    const uint32_t widthHz = stopHz - startHz;
+    uint32_t channelCount = ((widthHz + (targetSpacingHz / 2U)) / targetSpacingHz) + 1U;
+    if (channelCount < 4U)
+    {
+        channelCount = 4U;
+    }
+    else if (channelCount > 80U)
+    {
+        channelCount = 80U;
+    }
+
+    return (uint8_t)channelCount;
+}
+
+static void updateRuntimeFreqCountFromWidth()
+{
+    const uint32_t startHz = be32toh(luaRuntimeFreqStartMHz.properties.value) * 100000U;
+    const uint32_t stopHz = be32toh(luaRuntimeFreqStopMHz.properties.value) * 100000U;
+    luaRuntimeFreqCount.properties.u.value = calculateRuntimeChannelCount(startHz, stopHz, 600000U);
+}
+
+static void updateRuntimeHighFreqCountFromWidth()
+{
+    const uint32_t startHz = be32toh(luaRuntimeHighFreqStartMHz.properties.value) * 100000U;
+    const uint32_t stopHz = be32toh(luaRuntimeHighFreqStopMHz.properties.value) * 100000U;
+    luaRuntimeHighFreqCount.properties.u.value = calculateRuntimeChannelCount(startHz, stopHz, 1000000U);
+}
+
+static const char *resolveRuntimeCustomLabel(
+    uint8_t preset,
+    uint8_t customPreset,
+    const runtime_freq_preset_t *presets,
+    uint32_t startHz,
+    uint32_t stopHz,
+    char prefix,
+    char *customLabel)
+{
+    if (preset < customPreset)
+    {
+        return presets[preset].label;
+    }
+
+    formatRuntimeCustomLabel(customLabel, prefix, startHz, stopHz);
+    return customLabel;
+}
+
+static void updateRuntimeFreqStatus()
+{
+    const bool subgPending = FHSSruntimeFreqPending();
+    const bool highPending = FHSShighRuntimeFreqPending();
+    const char *subgLabel = firmwareOptions.runtime_freq_enabled
+        ? (firmwareOptions.runtime_freq_label[0] ? firmwareOptions.runtime_freq_label : "CUSTOM")
+        : "stock";
+    const char *highLabel = firmwareOptions.runtime_high_freq_enabled
+        ? (firmwareOptions.runtime_high_freq_label[0] ? firmwareOptions.runtime_high_freq_label : "HIGH")
+        : "stock";
+
+    if (subgPending || highPending)
+    {
+        snprintf(runtimeFreqStatus, sizeof(runtimeFreqStatus), "Pending: %s / %s", subgLabel, highLabel);
+    }
+    else if (firmwareOptions.runtime_freq_enabled || firmwareOptions.runtime_high_freq_enabled)
+    {
+        snprintf(runtimeFreqStatus, sizeof(runtimeFreqStatus), "Active: %s / %s", subgLabel, highLabel);
+    }
+    else
+    {
+        strlcpy(runtimeFreqStatus, "Active: stock", sizeof(runtimeFreqStatus));
+    }
+}
+
+static void appendU32(mspPacket_t *packet, uint32_t value)
+{
+    packet->addByte(value & 0xFFU);
+    packet->addByte((value >> 8) & 0xFFU);
+    packet->addByte((value >> 16) & 0xFFU);
+    packet->addByte((value >> 24) & 0xFFU);
+}
+
+static uint8_t appendRuntimeFreqPayload(uint8_t *payload, uint8_t enabled, uint8_t preset, uint8_t count, uint32_t start, uint32_t stop, const char *label)
+{
+    uint8_t offset = 0;
+    payload[offset++] = enabled;
+    payload[offset++] = preset;
+    payload[offset++] = count;
+    payload[offset++] = start & 0xFFU;
+    payload[offset++] = (start >> 8) & 0xFFU;
+    payload[offset++] = (start >> 16) & 0xFFU;
+    payload[offset++] = (start >> 24) & 0xFFU;
+    payload[offset++] = stop & 0xFFU;
+    payload[offset++] = (stop >> 8) & 0xFFU;
+    payload[offset++] = (stop >> 16) & 0xFFU;
+    payload[offset++] = (stop >> 24) & 0xFFU;
+    for (uint8_t i = 0; i < RUNTIME_FREQ_LABEL_LEN + 1; ++i)
+    {
+        payload[offset++] = label[i];
+    }
+    return offset;
+}
+
+static void sendRuntimeFreqConfigToRx()
+{
+    uint8_t frame[CRSF_MAX_PACKET_LEN] = {0};
+    auto *command = reinterpret_cast<crsf_ext_header_t *>(frame);
+    uint8_t *payload = command->payload;
+    payload[0] = CRSF_COMMAND_SUBCMD_RX;
+    payload[1] = CRSF_COMMAND_SUBCMD_RX_RUNTIME_FREQ;
+    uint8_t offset = 2;
+    offset += appendRuntimeFreqPayload(
+        &payload[offset],
+        firmwareOptions.runtime_freq_enabled ? 1U : 0U,
+        firmwareOptions.runtime_freq_preset,
+        firmwareOptions.runtime_freq_count,
+        firmwareOptions.runtime_freq_start,
+        firmwareOptions.runtime_freq_stop,
+        firmwareOptions.runtime_freq_label);
+    offset += appendRuntimeFreqPayload(
+        &payload[offset],
+        firmwareOptions.runtime_high_freq_enabled ? 1U : 0U,
+        firmwareOptions.runtime_high_freq_preset,
+        firmwareOptions.runtime_high_freq_count,
+        firmwareOptions.runtime_high_freq_start,
+        firmwareOptions.runtime_high_freq_stop,
+        firmwareOptions.runtime_high_freq_label);
+    crsfRouter.SetExtendedHeaderAndCrc(command, CRSF_FRAMETYPE_COMMAND, CRSF_EXT_FRAME_SIZE(offset), CRSF_ADDRESS_CRSF_RECEIVER, CRSF_ADDRESS_CRSF_TRANSMITTER);
+    crsfRouter.deliverMessageTo(CRSF_ADDRESS_CRSF_RECEIVER, reinterpret_cast<crsf_header_t *>(frame));
+}
+
+static void applyRuntimeFreqPreset(uint8_t preset)
+{
+    if (preset >= ARRAY_SIZE(runtimeFreqPresets))
+    {
+        preset = 0;
+    }
+
+    firmwareOptions.runtime_freq_preset = preset;
+    if (preset == 0)
+    {
+        FHSSdisableRuntimeFrequency();
+        return;
+    }
+
+    const runtime_freq_preset_t &runtimePreset = runtimeFreqPresets[preset];
+    FHSSsetRuntimeFrequency(
+        runtimePreset.startHz,
+        runtimePreset.stopHz,
+        runtimePreset.channelCount,
+        preset,
+        runtimePreset.label);
+}
+
+static void setRuntimeFreqFromLuaFields()
+{
+    const uint32_t startHz = be32toh(luaRuntimeFreqStartMHz.properties.value) * 100000U;
+    const uint32_t stopHz = be32toh(luaRuntimeFreqStopMHz.properties.value) * 100000U;
+    firmwareOptions.runtime_freq_auto_count = luaRuntimeFreqAutoCount.value != 0;
+    if (luaRuntimeFreqAutoCount.value != 0)
+    {
+        updateRuntimeFreqCountFromWidth();
+    }
+    const uint8_t channelCount = luaRuntimeFreqCount.properties.u.value;
+    if (luaRuntimeFreqEnable.value == 0)
+    {
+        FHSSdisableRuntimeFrequency();
+        return;
+    }
+
+    FHSSsetRuntimeFrequency(
+        startHz,
+        stopHz,
+        channelCount,
+        luaRuntimeFreqPreset.value,
+        resolveRuntimeCustomLabel(
+            luaRuntimeFreqPreset.value,
+            RUNTIME_FREQ_PRESET_CUSTOM,
+            runtimeFreqPresets,
+            startHz,
+            stopHz,
+            'C',
+            runtimeFreqCustomLabel));
+}
+
+static void applyRuntimeHighFreqPreset(uint8_t preset)
+{
+    if (preset >= ARRAY_SIZE(runtimeHighFreqPresets))
+    {
+        preset = 0;
+    }
+
+    firmwareOptions.runtime_high_freq_preset = preset;
+    if (preset == 0)
+    {
+        FHSSdisableHighRuntimeFrequency();
+        return;
+    }
+
+    const runtime_freq_preset_t &runtimePreset = runtimeHighFreqPresets[preset];
+    FHSSsetHighRuntimeFrequency(
+        runtimePreset.startHz,
+        runtimePreset.stopHz,
+        runtimePreset.channelCount,
+        preset,
+        runtimePreset.label);
+}
+
+static void setRuntimeHighFreqFromLuaFields()
+{
+    const uint32_t startHz = be32toh(luaRuntimeHighFreqStartMHz.properties.value) * 100000U;
+    const uint32_t stopHz = be32toh(luaRuntimeHighFreqStopMHz.properties.value) * 100000U;
+    firmwareOptions.runtime_high_freq_auto_count = luaRuntimeHighFreqAutoCount.value != 0;
+    if (luaRuntimeHighFreqAutoCount.value != 0)
+    {
+        updateRuntimeHighFreqCountFromWidth();
+    }
+    const uint8_t channelCount = luaRuntimeHighFreqCount.properties.u.value;
+    if (luaRuntimeHighFreqEnable.value == 0)
+    {
+        FHSSdisableHighRuntimeFrequency();
+        return;
+    }
+
+    FHSSsetHighRuntimeFrequency(
+        startHz,
+        stopHz,
+        channelCount,
+        luaRuntimeHighFreqPreset.value,
+        resolveRuntimeCustomLabel(
+            luaRuntimeHighFreqPreset.value,
+            RUNTIME_HIGH_FREQ_PRESET_CUSTOM,
+            runtimeHighFreqPresets,
+            startHz,
+            stopHz,
+            'H',
+            runtimeHighFreqCustomLabel));
+}
+
+static void applyRuntimeFrequencyAndRebind()
+{
+    setRuntimeFreqFromLuaFields();
+    setRuntimeHighFreqFromLuaFields();
+    saveOptions();
+    FHSSactivatePendingRuntimeFrequencies();
+    FHSSrandomiseFHSSsequence(uidMacSeedGet());
+
+    if (connectionState == connected)
+    {
+        sendRuntimeFreqConfigToRx();
+        deferExecutionMillis(250, []() {
+            FHSSrandomiseFHSSsequence(uidMacSeedGet());
+            EnterBindingModeSafely();
+        });
+    }
+    else
+    {
+        EnterBindingModeSafely();
+    }
+}
+#endif
+
 
 extern TxConfig config;
 extern void VtxTriggerSend();
@@ -372,8 +741,7 @@ extern bool TxBackpackWiFiReadyToSend;
 extern bool VRxBackpackWiFiReadyToSend;
 extern unsigned long rebootTime;
 extern void setWifiUpdateMode();
-extern void FHSSsetCustomFrequency(uint32_t freqStart, uint32_t freqStop, uint8_t freqCount);
-extern void FHSSdisableCustomFrequency();
+extern void EnterBindingModeSafely();
 
 void TXModuleEndpoint::supressCriticalErrors()
 {
@@ -1057,113 +1425,186 @@ void TXModuleEndpoint::registerParameters()
   registerParameter(&luaBLEJoystick, wifiBleCallback);
   #endif
 
-  // Custom Frequency folder - only for sub-GHz radios
-  #if defined(RADIO_SX127X) || defined(RADIO_LR1121)
-  if (HAS_RADIO) {
-    registerParameter(&luaCustomFreqFolder);
-    registerParameter(&luaCustomFreqPreset, [](propertiesCommon *item, uint8_t arg) {
-      // Preset options: 0=Off, 1=900 ISM, 2=868 EU, 3=915 US, 4=850 Custom, 5=Custom
-      uint32_t freqStart = 0, freqStop = 0;
-      uint8_t freqCount = 40;
-      bool enabled = true;
-
-      switch (arg) {
-        case 0: // Off - use default domain
-          enabled = false;
-          break;
-        case 1: // 900 ISM (900-930 MHz)
-          freqStart = 900000000;
-          freqStop = 930000000;
-          freqCount = 40;
-          break;
-        case 2: // 868 EU (863-870 MHz)
-          freqStart = 863000000;
-          freqStop = 870000000;
-          freqCount = 13;
-          break;
-        case 3: // 915 US (902-928 MHz)
-          freqStart = 902000000;
-          freqStop = 928000000;
-          freqCount = 40;
-          break;
-        case 4: // 850 Custom (840-860 MHz)
-          freqStart = 840000000;
-          freqStop = 860000000;
-          freqCount = 40;
-          break;
-        case 5: // Custom - use current values from UI
-          freqStart = luaCustomFreqStartMHz.properties.u.value * 100000UL; // 0.1MHz to Hz
-          freqStop = luaCustomFreqStopMHz.properties.u.value * 100000UL;
-          freqCount = luaCustomFreqCount.properties.u.value;
-          break;
+#if defined(RADIO_LR1121)
+  if (HAS_RADIO)
+  {
+    registerParameter(&luaRuntimeFreqFolder);
+    registerParameter(&luaRuntimeFreqPreset, [](propertiesCommon *item, uint8_t arg) {
+      (void)item;
+      if (arg < ARRAY_SIZE(runtimeFreqPresets))
+      {
+        luaRuntimeFreqPreset.value = arg;
+        if (arg < RUNTIME_FREQ_PRESET_CUSTOM && arg != 0)
+        {
+          applyRuntimeFreqPreset(arg);
+          setFloatValue(&luaRuntimeFreqStartMHz, runtimeFreqPresets[arg].startHz / 100000U);
+          setFloatValue(&luaRuntimeFreqStopMHz, runtimeFreqPresets[arg].stopHz / 100000U);
+          luaRuntimeFreqCount.properties.u.value = runtimeFreqPresets[arg].channelCount;
+          luaRuntimeFreqEnable.value = 1;
+          luaRuntimeFreqAutoCount.value = 1;
+          firmwareOptions.runtime_freq_auto_count = true;
+        }
+        if (arg == 0)
+        {
+          applyRuntimeFreqPreset(arg);
+          luaRuntimeFreqEnable.value = 0;
+        }
       }
-
-      if (enabled) {
-        config.SetCustomFreqEnabled(true);
-        config.SetCustomFreqStart(freqStart);
-        config.SetCustomFreqStop(freqStop);
-        config.SetCustomFreqCount(freqCount);
-        // Update UI values to reflect preset
-        luaCustomFreqStartMHz.properties.u.value = freqStart / 100000UL;
-        luaCustomFreqStopMHz.properties.u.value = freqStop / 100000UL;
-        luaCustomFreqCount.properties.u.value = freqCount;
-      } else {
-        config.SetCustomFreqEnabled(false);
+    }, luaRuntimeFreqFolder.common.id);
+    registerParameter(&luaRuntimeFreqEnable, [](propertiesCommon *item, uint8_t arg) {
+      (void)item;
+      luaRuntimeFreqEnable.value = arg;
+    }, luaRuntimeFreqFolder.common.id);
+    registerParameter(&luaRuntimeFreqAutoCount, [](propertiesCommon *item, uint8_t arg) {
+      (void)item;
+      luaRuntimeFreqAutoCount.value = arg;
+      firmwareOptions.runtime_freq_auto_count = arg != 0;
+      if (arg != 0)
+      {
+        updateRuntimeFreqCountFromWidth();
+        luaRuntimeFreqEnable.value = 1;
       }
-    }, luaCustomFreqFolder.common.id);
-
-    registerParameter(&luaCustomFreqStartMHz, [](propertiesCommon *item, uint8_t arg) {
-      // arg is not used for UINT16, value is in the parameter
-      uint32_t freqHz = luaCustomFreqStartMHz.properties.u.value * 100000UL;
-      config.SetCustomFreqStart(freqHz);
-      // Set preset to Custom when manually editing
-      luaCustomFreqPreset.value = 5;
-    }, luaCustomFreqFolder.common.id);
-
-    registerParameter(&luaCustomFreqStopMHz, [](propertiesCommon *item, uint8_t arg) {
-      uint32_t freqHz = luaCustomFreqStopMHz.properties.u.value * 100000UL;
-      config.SetCustomFreqStop(freqHz);
-      luaCustomFreqPreset.value = 5;
-    }, luaCustomFreqFolder.common.id);
-
-    registerParameter(&luaCustomFreqCount, [](propertiesCommon *item, uint8_t arg) {
-      config.SetCustomFreqCount(luaCustomFreqCount.properties.u.value);
-      luaCustomFreqPreset.value = 5;
-    }, luaCustomFreqFolder.common.id);
-
-    registerParameter(&luaCustomFreqApply, [this](propertiesCommon *item, uint8_t arg) {
+    }, luaRuntimeFreqFolder.common.id);
+    registerParameter(&luaRuntimeFreqStartMHz, [](propertiesCommon *item, uint8_t arg) {
+      (void)item;
+      (void)arg;
+      luaRuntimeFreqPreset.value = RUNTIME_FREQ_PRESET_CUSTOM;
+      luaRuntimeFreqEnable.value = 1;
+      if (luaRuntimeFreqAutoCount.value != 0)
+      {
+        updateRuntimeFreqCountFromWidth();
+      }
+    }, luaRuntimeFreqFolder.common.id);
+    registerParameter(&luaRuntimeFreqStopMHz, [](propertiesCommon *item, uint8_t arg) {
+      (void)item;
+      (void)arg;
+      luaRuntimeFreqPreset.value = RUNTIME_FREQ_PRESET_CUSTOM;
+      luaRuntimeFreqEnable.value = 1;
+      if (luaRuntimeFreqAutoCount.value != 0)
+      {
+        updateRuntimeFreqCountFromWidth();
+      }
+    }, luaRuntimeFreqFolder.common.id);
+    registerParameter(&luaRuntimeFreqCount, [](propertiesCommon *item, uint8_t arg) {
+      (void)item;
+      (void)arg;
+      luaRuntimeFreqPreset.value = RUNTIME_FREQ_PRESET_CUSTOM;
+      luaRuntimeFreqEnable.value = 1;
+      luaRuntimeFreqAutoCount.value = 0;
+      firmwareOptions.runtime_freq_auto_count = false;
+    }, luaRuntimeFreqFolder.common.id);
+    registerParameter(&luaRuntimeHighFreqPreset, [](propertiesCommon *item, uint8_t arg) {
+      (void)item;
+      if (arg < ARRAY_SIZE(runtimeHighFreqPresets))
+      {
+        luaRuntimeHighFreqPreset.value = arg;
+        if (arg < RUNTIME_HIGH_FREQ_PRESET_CUSTOM && arg != 0)
+        {
+          applyRuntimeHighFreqPreset(arg);
+          setFloatValue(&luaRuntimeHighFreqStartMHz, runtimeHighFreqPresets[arg].startHz / 100000U);
+          setFloatValue(&luaRuntimeHighFreqStopMHz, runtimeHighFreqPresets[arg].stopHz / 100000U);
+          luaRuntimeHighFreqCount.properties.u.value = runtimeHighFreqPresets[arg].channelCount;
+          luaRuntimeHighFreqEnable.value = 1;
+          luaRuntimeHighFreqAutoCount.value = 1;
+          firmwareOptions.runtime_high_freq_auto_count = true;
+        }
+        if (arg == 0)
+        {
+          applyRuntimeHighFreqPreset(arg);
+          luaRuntimeHighFreqEnable.value = 0;
+        }
+      }
+    }, luaRuntimeFreqFolder.common.id);
+    registerParameter(&luaRuntimeHighFreqEnable, [](propertiesCommon *item, uint8_t arg) {
+      (void)item;
+      luaRuntimeHighFreqEnable.value = arg;
+    }, luaRuntimeFreqFolder.common.id);
+    registerParameter(&luaRuntimeHighFreqAutoCount, [](propertiesCommon *item, uint8_t arg) {
+      (void)item;
+      luaRuntimeHighFreqAutoCount.value = arg;
+      firmwareOptions.runtime_high_freq_auto_count = arg != 0;
+      if (arg != 0)
+      {
+        updateRuntimeHighFreqCountFromWidth();
+        luaRuntimeHighFreqEnable.value = 1;
+      }
+    }, luaRuntimeFreqFolder.common.id);
+    registerParameter(&luaRuntimeHighFreqStartMHz, [](propertiesCommon *item, uint8_t arg) {
+      (void)item;
+      (void)arg;
+      luaRuntimeHighFreqPreset.value = RUNTIME_HIGH_FREQ_PRESET_CUSTOM;
+      luaRuntimeHighFreqEnable.value = 1;
+      if (luaRuntimeHighFreqAutoCount.value != 0)
+      {
+        updateRuntimeHighFreqCountFromWidth();
+      }
+    }, luaRuntimeFreqFolder.common.id);
+    registerParameter(&luaRuntimeHighFreqStopMHz, [](propertiesCommon *item, uint8_t arg) {
+      (void)item;
+      (void)arg;
+      luaRuntimeHighFreqPreset.value = RUNTIME_HIGH_FREQ_PRESET_CUSTOM;
+      luaRuntimeHighFreqEnable.value = 1;
+      if (luaRuntimeHighFreqAutoCount.value != 0)
+      {
+        updateRuntimeHighFreqCountFromWidth();
+      }
+    }, luaRuntimeFreqFolder.common.id);
+    registerParameter(&luaRuntimeHighFreqCount, [](propertiesCommon *item, uint8_t arg) {
+      (void)item;
+      (void)arg;
+      luaRuntimeHighFreqPreset.value = RUNTIME_HIGH_FREQ_PRESET_CUSTOM;
+      luaRuntimeHighFreqEnable.value = 1;
+      luaRuntimeHighFreqAutoCount.value = 0;
+      firmwareOptions.runtime_high_freq_auto_count = false;
+    }, luaRuntimeFreqFolder.common.id);
+    registerParameter(&luaRuntimeFreqApply, [this](propertiesCommon *item, uint8_t arg) {
       commandParameter *cmd = (commandParameter *)item;
-      if (arg == lcsClick) {
-        if (connectionState == connected) {
-          sendCommandResponse(cmd, lcsAskConfirm, "Apply freq & rebind?");
-        } else {
-          // Not connected, apply directly
-          if (config.GetCustomFreqEnabled()) {
-            FHSSsetCustomFrequency(config.GetCustomFreqStart(), config.GetCustomFreqStop(), config.GetCustomFreqCount());
-          } else {
-            FHSSdisableCustomFrequency();
+      switch ((commandStep_e)arg)
+      {
+        case lcsClick:
+          if (luaRuntimeFreqEnable.value != 0)
+          {
+            setRuntimeFreqFromLuaFields();
+            if (!FHSSruntimeFreqValid())
+            {
+              this->sendCommandResponse(cmd, lcsIdle, "Invalid sub-GHz range");
+              return;
+            }
           }
-          EnterBindingModeSafely();
-          sendCommandResponse(cmd, lcsExecuting, "Applying...");
-        }
-      } else if (arg == lcsConfirmed) {
-        if (config.GetCustomFreqEnabled()) {
-          FHSSsetCustomFrequency(config.GetCustomFreqStart(), config.GetCustomFreqStop(), config.GetCustomFreqCount());
-        } else {
-          FHSSdisableCustomFrequency();
-        }
-        EnterBindingModeSafely();
-        sendCommandResponse(cmd, lcsExecuting, "Applying...");
-      } else if (arg == lcsCancel) {
-        sendCommandResponse(cmd, lcsIdle, STR_EMPTYSPACE);
-      } else {
-        sendCommandResponse(cmd, cmd->step, cmd->info);
+          if (luaRuntimeHighFreqEnable.value != 0)
+          {
+            setRuntimeHighFreqFromLuaFields();
+            if (!FHSShighRuntimeFreqValid())
+            {
+              this->sendCommandResponse(cmd, lcsIdle, "Invalid high-band range");
+              return;
+            }
+          }
+          if (connectionState == connected)
+          {
+            this->sendCommandResponse(cmd, lcsAskConfirm, "Push to RX and rebind?");
+          }
+          else
+          {
+            applyRuntimeFrequencyAndRebind();
+            this->sendCommandResponse(cmd, lcsExecuting, "Applying...");
+          }
+          break;
+        case lcsConfirmed:
+          applyRuntimeFrequencyAndRebind();
+          this->sendCommandResponse(cmd, lcsExecuting, "Applying...");
+          break;
+        case lcsCancel:
+          this->sendCommandResponse(cmd, lcsIdle, STR_EMPTYSPACE);
+          break;
+        default:
+          this->sendCommandResponse(cmd, cmd->step, cmd->info);
+          break;
       }
-    }, luaCustomFreqFolder.common.id);
-
-    registerParameter(&luaCustomFreqInfo, nullptr, luaCustomFreqFolder.common.id);
+    }, luaRuntimeFreqFolder.common.id);
+    registerParameter(&luaRuntimeFreqInfo, nullptr, luaRuntimeFreqFolder.common.id);
   }
-  #endif
+#endif
 
   if (HAS_RADIO) {
     registerParameter(&luaBind, sendCallback);
@@ -1175,6 +1616,7 @@ void TXModuleEndpoint::registerParameters()
 
 void TXModuleEndpoint::updateParameters()
 {
+  static bool runtimeFreqAutoApplyInProgress = false;
   bool isMavlinkMode = config.GetLinkMode() == TX_MAVLINK_MODE;
   uint8_t currentRate = adjustPacketRateForBaud(config.GetRate());
 #if defined(RADIO_LR1121)
@@ -1246,13 +1688,37 @@ void TXModuleEndpoint::updateParameters()
     setStringValue(&luaBackpackVersion, backpackVersion);
   }
 
-  // Update custom frequency UI from config
-  #if defined(RADIO_SX127X) || defined(RADIO_LR1121)
-  setTextSelectionValue(&luaCustomFreqPreset, config.GetCustomFreqEnabled() ? 5 : 0); // 5=Custom, 0=Off
-  luaCustomFreqStartMHz.properties.u.value = config.GetCustomFreqStart() / 100000UL;
-  luaCustomFreqStopMHz.properties.u.value = config.GetCustomFreqStop() / 100000UL;
-  luaCustomFreqCount.properties.u.value = config.GetCustomFreqCount();
-  #endif
+#if defined(RADIO_LR1121)
+  if (!runtimeFreqAutoApplyInProgress
+      && connectionState == connected
+      && (FHSSruntimeFreqPending() || FHSShighRuntimeFreqPending()))
+  {
+    runtimeFreqAutoApplyInProgress = true;
+    sendRuntimeFreqConfigToRx();
+    FHSSactivatePendingRuntimeFrequencies();
+    FHSSrandomiseFHSSsequence(uidMacSeedGet());
+    deferExecutionMillis(250, []() {
+      EnterBindingModeSafely();
+    });
+  }
+  if (connectionState != connected)
+  {
+    runtimeFreqAutoApplyInProgress = false;
+  }
+  setTextSelectionValue(&luaRuntimeFreqEnable, firmwareOptions.runtime_freq_enabled ? 1U : 0U);
+  setTextSelectionValue(&luaRuntimeFreqPreset, firmwareOptions.runtime_freq_preset < ARRAY_SIZE(runtimeFreqPresets) ? firmwareOptions.runtime_freq_preset : 0U);
+  setFloatValue(&luaRuntimeFreqStartMHz, firmwareOptions.runtime_freq_start / 100000U);
+  setFloatValue(&luaRuntimeFreqStopMHz, firmwareOptions.runtime_freq_stop / 100000U);
+  luaRuntimeFreqCount.properties.u.value = firmwareOptions.runtime_freq_count;
+  setTextSelectionValue(&luaRuntimeFreqAutoCount, firmwareOptions.runtime_freq_auto_count ? 1U : 0U);
+  setTextSelectionValue(&luaRuntimeHighFreqEnable, firmwareOptions.runtime_high_freq_enabled ? 1U : 0U);
+  setTextSelectionValue(&luaRuntimeHighFreqPreset, firmwareOptions.runtime_high_freq_preset < ARRAY_SIZE(runtimeHighFreqPresets) ? firmwareOptions.runtime_high_freq_preset : 0U);
+  setFloatValue(&luaRuntimeHighFreqStartMHz, firmwareOptions.runtime_high_freq_start / 100000U);
+  setFloatValue(&luaRuntimeHighFreqStopMHz, firmwareOptions.runtime_high_freq_stop / 100000U);
+  luaRuntimeHighFreqCount.properties.u.value = firmwareOptions.runtime_high_freq_count;
+  setTextSelectionValue(&luaRuntimeHighFreqAutoCount, firmwareOptions.runtime_high_freq_auto_count ? 1U : 0U);
+  updateRuntimeFreqStatus();
+#endif
 
   updateFolderNames();
 }

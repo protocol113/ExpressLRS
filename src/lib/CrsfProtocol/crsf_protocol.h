@@ -93,6 +93,7 @@ typedef enum : uint8_t {
 typedef enum : uint8_t {
     CRSF_COMMAND_SUBCMD_RX_BIND = 0x01,
     CRSF_COMMAND_MODEL_SELECT_ID = 0x05,
+    CRSF_COMMAND_SUBCMD_RX_RUNTIME_FREQ = 0x06,
     CRSF_HANDSET_SUBCMD_TIMING = 0x10,
 } crsf_subcommand_e;
 

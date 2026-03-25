@@ -12,10 +12,18 @@ class RxOptionsPanel extends LitElement {
     @state() accessor lockOnFirst
     @state() accessor modelId
     @state() accessor forceTlmOff
-    @state() accessor customFreqEnabled
-    @state() accessor customFreqStart
-    @state() accessor customFreqStop
-    @state() accessor customFreqCount
+    @state() accessor runtimeFreqEnabled
+    @state() accessor runtimeFreqPreset
+    @state() accessor runtimeFreqStart
+    @state() accessor runtimeFreqStop
+    @state() accessor runtimeFreqCount
+    @state() accessor runtimeFreqLabel
+    @state() accessor runtimeHighFreqEnabled
+    @state() accessor runtimeHighFreqPreset
+    @state() accessor runtimeHighFreqStart
+    @state() accessor runtimeHighFreqStop
+    @state() accessor runtimeHighFreqCount
+    @state() accessor runtimeHighFreqLabel
 
     createRenderRoot() {
         this.domain = elrsState.options.domain
@@ -23,11 +31,18 @@ class RxOptionsPanel extends LitElement {
         this.enableModelMatch = elrsState.config.modelid!==undefined && elrsState.config.modelid !== 255
         this.modelId = elrsState.config.modelid===undefined ? 0 : elrsState.config.modelid
         this.forceTlmOff = elrsState.config['force-tlm']
-        // Custom frequency settings
-        this.customFreqEnabled = elrsState.options['custom-freq-enabled'] || false
-        this.customFreqStart = elrsState.options['custom-freq-start'] || 900000000
-        this.customFreqStop = elrsState.options['custom-freq-stop'] || 930000000
-        this.customFreqCount = elrsState.options['custom-freq-count'] || 40
+        this.runtimeFreqEnabled = elrsState.options['runtime-freq-enabled'] || false
+        this.runtimeFreqPreset = elrsState.options['runtime-freq-preset'] || 0
+        this.runtimeFreqStart = elrsState.options['runtime-freq-start'] || 903500000
+        this.runtimeFreqStop = elrsState.options['runtime-freq-stop'] || 926900000
+        this.runtimeFreqCount = elrsState.options['runtime-freq-count'] || 40
+        this.runtimeFreqLabel = elrsState.options['runtime-freq-label'] || ''
+        this.runtimeHighFreqEnabled = elrsState.options['runtime-high-freq-enabled'] || false
+        this.runtimeHighFreqPreset = elrsState.options['runtime-high-freq-preset'] || 0
+        this.runtimeHighFreqStart = elrsState.options['runtime-high-freq-start'] || 2400400000
+        this.runtimeHighFreqStop = elrsState.options['runtime-high-freq-stop'] || 2479400000
+        this.runtimeHighFreqCount = elrsState.options['runtime-high-freq-count'] || 80
+        this.runtimeHighFreqLabel = elrsState.options['runtime-high-freq-label'] || ''
         this.save = this.save.bind(this)
         return this
     }
@@ -93,43 +108,94 @@ class RxOptionsPanel extends LitElement {
                     </div>
 
                     <!-- FEATURE:HAS_SUBGHZ -->
-                    <h2>Custom Frequency (Advanced)</h2>
-                    Override the regulatory domain with custom frequency settings. <b>Both TX and RX must use matching frequencies.</b>
-                    Use this to operate on non-standard frequencies for specialized applications.
+                    <h2>Runtime Frequency Override</h2>
+                    This mirrors the active TX override as a fallback/editor surface. For normal use, apply from the TX Lua so the RX is updated and both sides rebind together. X-Band/crossband uses the current sub-GHz plus high-band pair together.
                     <br/>
                     <div class="mui-checkbox">
-                        <input id='custom-freq-enabled' type='checkbox'
-                               ?checked="${this.customFreqEnabled}"
-                               @change="${(e) => this.customFreqEnabled = e.target.checked}"
+                        <input id='runtime-freq-enabled' type='checkbox'
+                               ?checked="${this.runtimeFreqEnabled}"
+                               @change="${(e) => this.runtimeFreqEnabled = e.target.checked}"
                         />
-                        <label for="custom-freq-enabled">Enable Custom Frequency</label>
+                        <label for="runtime-freq-enabled">Enable runtime sub-GHz override</label>
                     </div>
-                    ${this.customFreqEnabled ? html`
+                    ${this.runtimeFreqEnabled ? html`
                     <div class="mui-textfield">
-                        <input id="custom-freq-start" type='number' required
-                               min="400000000" max="2500000000" step="100000"
-                               @change="${(e) => this.customFreqStart = parseInt(e.target.value)}"
-                               .value="${this.customFreqStart}"
+                        <input id="runtime-freq-preset" type='number' min="0" max="5"
+                               @change="${(e) => this.runtimeFreqPreset = parseInt(e.target.value)}"
+                               .value="${this.runtimeFreqPreset}"
                                @keypress="${_uintInput}"/>
-                        <label for="custom-freq-start">Start Frequency (Hz) - e.g. 900000000 for 900 MHz</label>
-                    </div>
-                    <div class="mui-textfield">
-                        <input id="custom-freq-stop" type='number' required
-                               min="400000000" max="2500000000" step="100000"
-                               @change="${(e) => this.customFreqStop = parseInt(e.target.value)}"
-                               .value="${this.customFreqStop}"
-                               @keypress="${_uintInput}"/>
-                        <label for="custom-freq-stop">Stop Frequency (Hz) - e.g. 930000000 for 930 MHz</label>
+                        <label for="runtime-freq-preset">Preset Slot</label>
                     </div>
                     <div class="mui-textfield">
-                        <input id="custom-freq-count" type='number' required
-                               min="4" max="80"
-                               @change="${(e) => this.customFreqCount = parseInt(e.target.value)}"
-                               .value="${this.customFreqCount}"
+                        <input id="runtime-freq-start" type='number' min="700000000" max="960000000"
+                               @change="${(e) => this.runtimeFreqStart = parseInt(e.target.value)}"
+                               .value="${this.runtimeFreqStart}"
                                @keypress="${_uintInput}"/>
-                        <label for="custom-freq-count">Channel Count (4-80)</label>
+                        <label for="runtime-freq-start">Start Frequency (Hz)</label>
                     </div>
-                    <p><i>Common presets: 900 ISM (900-930MHz, 40ch), 868 EU (863-870MHz, 13ch), 915 US (902-928MHz, 40ch)</i></p>
+                    <div class="mui-textfield">
+                        <input id="runtime-freq-stop" type='number' min="700000000" max="960000000"
+                               @change="${(e) => this.runtimeFreqStop = parseInt(e.target.value)}"
+                               .value="${this.runtimeFreqStop}"
+                               @keypress="${_uintInput}"/>
+                        <label for="runtime-freq-stop">Stop Frequency (Hz)</label>
+                    </div>
+                    <div class="mui-textfield">
+                        <input id="runtime-freq-count" type='number' min="4" max="80"
+                               @change="${(e) => this.runtimeFreqCount = parseInt(e.target.value)}"
+                               .value="${this.runtimeFreqCount}"
+                               @keypress="${_uintInput}"/>
+                        <label for="runtime-freq-count">Channel Count</label>
+                    </div>
+                    <div class="mui-textfield">
+                        <input id="runtime-freq-label" type='text' maxlength="12"
+                               @change="${(e) => this.runtimeFreqLabel = e.target.value}"
+                               .value="${this.runtimeFreqLabel}">
+                        <label for="runtime-freq-label">Display Label</label>
+                    </div>
+                    <div class="mui-checkbox">
+                        <input id='runtime-high-freq-enabled' type='checkbox'
+                               ?checked="${this.runtimeHighFreqEnabled}"
+                               @change="${(e) => this.runtimeHighFreqEnabled = e.target.checked}"
+                        />
+                        <label for="runtime-high-freq-enabled">Enable runtime high-band override (2.4/S-band/crossband)</label>
+                    </div>
+                    ${this.runtimeHighFreqEnabled ? html`
+                    <div class="mui-textfield">
+                        <input id="runtime-high-freq-preset" type='number' min="0" max="4"
+                               @change="${(e) => this.runtimeHighFreqPreset = parseInt(e.target.value)}"
+                               .value="${this.runtimeHighFreqPreset}"
+                               @keypress="${_uintInput}"/>
+                        <label for="runtime-high-freq-preset">High-Band Preset Slot</label>
+                    </div>
+                    <div class="mui-textfield">
+                        <input id="runtime-high-freq-start" type='number' min="1900000000" max="2500000000"
+                               @change="${(e) => this.runtimeHighFreqStart = parseInt(e.target.value)}"
+                               .value="${this.runtimeHighFreqStart}"
+                               @keypress="${_uintInput}"/>
+                        <label for="runtime-high-freq-start">High-Band Start Frequency (Hz)</label>
+                    </div>
+                    <div class="mui-textfield">
+                        <input id="runtime-high-freq-stop" type='number' min="1900000000" max="2500000000"
+                               @change="${(e) => this.runtimeHighFreqStop = parseInt(e.target.value)}"
+                               .value="${this.runtimeHighFreqStop}"
+                               @keypress="${_uintInput}"/>
+                        <label for="runtime-high-freq-stop">High-Band Stop Frequency (Hz)</label>
+                    </div>
+                    <div class="mui-textfield">
+                        <input id="runtime-high-freq-count" type='number' min="4" max="80"
+                               @change="${(e) => this.runtimeHighFreqCount = parseInt(e.target.value)}"
+                               .value="${this.runtimeHighFreqCount}"
+                               @keypress="${_uintInput}"/>
+                        <label for="runtime-high-freq-count">High-Band Channel Count</label>
+                    </div>
+                    <div class="mui-textfield">
+                        <input id="runtime-high-freq-label" type='text' maxlength="12"
+                               @change="${(e) => this.runtimeHighFreqLabel = e.target.value}"
+                               .value="${this.runtimeHighFreqLabel}">
+                        <label for="runtime-high-freq-label">High-Band Display Label</label>
+                    </div>
+                    ` : ''}
                     ` : ''}
                     <!-- /FEATURE:HAS_SUBGHZ -->
 
@@ -157,10 +223,18 @@ class RxOptionsPanel extends LitElement {
             options: {
                 // FEATURE: HAS_SUBGHZ
                 'domain': this.domain,
-                'custom-freq-enabled': this.customFreqEnabled,
-                'custom-freq-start': this.customFreqStart,
-                'custom-freq-stop': this.customFreqStop,
-                'custom-freq-count': this.customFreqCount,
+                'runtime-freq-enabled': this.runtimeFreqEnabled,
+                'runtime-freq-preset': this.runtimeFreqPreset,
+                'runtime-freq-start': this.runtimeFreqStart,
+                'runtime-freq-stop': this.runtimeFreqStop,
+                'runtime-freq-count': this.runtimeFreqCount,
+                'runtime-freq-label': this.runtimeFreqLabel,
+                'runtime-high-freq-enabled': this.runtimeHighFreqEnabled,
+                'runtime-high-freq-preset': this.runtimeHighFreqPreset,
+                'runtime-high-freq-start': this.runtimeHighFreqStart,
+                'runtime-high-freq-stop': this.runtimeHighFreqStop,
+                'runtime-high-freq-count': this.runtimeHighFreqCount,
+                'runtime-high-freq-label': this.runtimeHighFreqLabel,
                 // /FEATURE: HAS_SUBGHZ
                 'lock-on-first-connection': this.lockOnFirst,
             },
@@ -179,10 +253,18 @@ class RxOptionsPanel extends LitElement {
         let changed = false
         // FEATURE: HAS_SUBGHZ
         changed |= this.domain !== elrsState.options['domain']
-        changed |= this.customFreqEnabled !== (elrsState.options['custom-freq-enabled'] || false)
-        changed |= this.customFreqStart !== (elrsState.options['custom-freq-start'] || 900000000)
-        changed |= this.customFreqStop !== (elrsState.options['custom-freq-stop'] || 930000000)
-        changed |= this.customFreqCount !== (elrsState.options['custom-freq-count'] || 40)
+        changed |= this.runtimeFreqEnabled !== (elrsState.options['runtime-freq-enabled'] || false)
+        changed |= this.runtimeFreqPreset !== (elrsState.options['runtime-freq-preset'] || 0)
+        changed |= this.runtimeFreqStart !== (elrsState.options['runtime-freq-start'] || 903500000)
+        changed |= this.runtimeFreqStop !== (elrsState.options['runtime-freq-stop'] || 926900000)
+        changed |= this.runtimeFreqCount !== (elrsState.options['runtime-freq-count'] || 40)
+        changed |= this.runtimeFreqLabel !== (elrsState.options['runtime-freq-label'] || '')
+        changed |= this.runtimeHighFreqEnabled !== (elrsState.options['runtime-high-freq-enabled'] || false)
+        changed |= this.runtimeHighFreqPreset !== (elrsState.options['runtime-high-freq-preset'] || 0)
+        changed |= this.runtimeHighFreqStart !== (elrsState.options['runtime-high-freq-start'] || 2400400000)
+        changed |= this.runtimeHighFreqStop !== (elrsState.options['runtime-high-freq-stop'] || 2479400000)
+        changed |= this.runtimeHighFreqCount !== (elrsState.options['runtime-high-freq-count'] || 80)
+        changed |= this.runtimeHighFreqLabel !== (elrsState.options['runtime-high-freq-label'] || '')
         // /FEATURE: HAS_SUBGHZ
         changed |= this.lockOnFirst !== elrsState.options['lock-on-first-connection']
         changed |= this.enableModelMatch && this.modelId !== elrsState.config['modelid']

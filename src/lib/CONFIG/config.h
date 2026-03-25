@@ -94,14 +94,6 @@ typedef enum {
     BACKPACK_TELEM_MODE_BLUETOOTH,
 } telem_mode_t;
 
-// Custom frequency configuration for advanced users
-typedef struct {
-    uint32_t    freqStart;      // Start frequency in Hz
-    uint32_t    freqStop;       // Stop frequency in Hz
-    uint8_t     freqCount;      // Number of channels (1-80)
-    uint8_t     enabled;        // 0=use default domain, 1=use custom
-} custom_freq_config_t;
-
 typedef struct {
     uint32_t        version;
     uint8_t         vtxBand;    // 0=Off, else band number
@@ -120,7 +112,6 @@ typedef struct {
     tx_button_color_t buttonColors[2];  // FUTURE: TX RGB color / mode (sets color of TX, can be a static color or standard)
                                         // FUTURE: Model RGB color / mode (sets LED color mode on the model, but can be second TX led color too)
                                         // FUTURE: Custom button actions
-    custom_freq_config_t customFreq;    // Custom frequency configuration
 } tx_config_t;
 
 class TxConfig
@@ -157,12 +148,6 @@ public:
     model_config_t const &GetModelConfig(uint8_t model) const { return m_config.model_config[model]; }
     uint8_t GetPTRStartChannel() const { return m_model->ptrStartChannel; }
     uint8_t GetPTREnableChannel() const { return m_model->ptrEnableChannel; }
-    // Custom frequency getters
-    bool GetCustomFreqEnabled() const { return m_config.customFreq.enabled; }
-    uint32_t GetCustomFreqStart() const { return m_config.customFreq.freqStart; }
-    uint32_t GetCustomFreqStop() const { return m_config.customFreq.freqStop; }
-    uint8_t GetCustomFreqCount() const { return m_config.customFreq.freqCount; }
-
     // Setters
     void SetRate(uint8_t rate);
     void SetTlm(uint8_t tlm);
@@ -190,12 +175,6 @@ public:
     void SetBackpackTlmMode(uint8_t mode);
     void SetPTRStartChannel(uint8_t ptrStartChannel);
     void SetPTREnableChannel(uint8_t ptrEnableChannel);
-    // Custom frequency setters
-    void SetCustomFreqEnabled(bool enabled);
-    void SetCustomFreqStart(uint32_t freqStart);
-    void SetCustomFreqStop(uint32_t freqStop);
-    void SetCustomFreqCount(uint8_t freqCount);
-
     // State setters
     bool SetModelId(uint8_t modelId);
 

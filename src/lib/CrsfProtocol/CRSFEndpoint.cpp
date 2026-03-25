@@ -147,6 +147,13 @@ uint8_t *CRSFEndpoint::int16ParameterToArray(const int16Parameter *parameter, ui
     return (uint8_t *)stpcpy((char *)next, parameter->units);
 }
 
+uint8_t *CRSFEndpoint::floatParameterToArray(const floatParameter *parameter, uint8_t *next)
+{
+    memcpy(next, &parameter->properties, sizeof(parameter->properties));
+    next += sizeof(parameter->properties);
+    return (uint8_t *)stpcpy((char *)next, parameter->units);
+}
+
 uint8_t *CRSFEndpoint::stringParameterToArray(const stringParameter *parameter, uint8_t *next)
 {
     return (uint8_t *)stpcpy((char *)next, parameter->value);
@@ -228,6 +235,8 @@ uint8_t CRSFEndpoint::sendParameter(const crsf_addr_e origin, const bool isElrs,
         dataEnd = folderParameterToArray((folderParameter *)parameter, &chunkBuffer[4]);
         break;
     case CRSF_FLOAT:
+        dataEnd = floatParameterToArray((floatParameter *)parameter, chunkStart);
+        break;
     case CRSF_OUT_OF_RANGE:
     default:
         return 0;
@@ -296,8 +305,10 @@ void CRSFEndpoint::registerParameter(void *definition, const parameterHandlerCal
     paramCallbacks[lastParameter] = callback;
 }
 
-void CRSFEndpoint::parameterUpdateReq(const crsf_addr_e origin, const bool isElrs, const uint8_t parameterType, const uint8_t parameterIndex, const uint8_t parameterArg)
+void CRSFEndpoint::parameterUpdateReq(const crsf_addr_e origin, const bool isElrs, const uint8_t parameterType, const uint8_t *payload, const uint8_t payloadLength)
 {
+    const uint8_t parameterIndex = payloadLength > 0 ? payload[0] : 0;
+    const uint8_t parameterArg = payloadLength > 1 ? payload[1] : 0;
     propertiesCommon *parameter = paramDefinitions[parameterIndex];
     requestOrigin = origin;
 
@@ -307,10 +318,45 @@ void CRSFEndpoint::parameterUpdateReq(const crsf_addr_e origin, const bool isElr
         if (parameterIndex < MAX_CRSF_PARAMETERS && paramCallbacks[parameterIndex])
         {
             DBGLN("Set parameter [%s]=%u", parameter->name, parameterArg);
+            const uint8_t dataType = parameter->type & CRSF_FIELD_TYPE_MASK;
+
+            if (dataType == CRSF_UINT8 || dataType == CRSF_INT8)
+            {
+                if (payloadLength > 1)
+                {
+                    ((int8Parameter *)parameter)->properties.u.value = payload[1];
+                }
+            }
+            else if (dataType == CRSF_UINT16 || dataType == CRSF_INT16)
+            {
+                if (payloadLength > 2)
+                {
+                    const uint16_t value = ((uint16_t)payload[1] << 8) | payload[2];
+                    ((int16Parameter *)parameter)->properties.u.value = htobe16(value);
+                }
+            }
+            else if (dataType == CRSF_FLOAT)
+            {
+                if (payloadLength > 4)
+                {
+                    const uint32_t value = ((uint32_t)payload[1] << 24)
+                        | ((uint32_t)payload[2] << 16)
+                        | ((uint32_t)payload[3] << 8)
+                        | payload[4];
+                    ((floatParameter *)parameter)->properties.value = htobe32(value);
+                }
+            }
+            else if (dataType == CRSF_TEXT_SELECTION)
+            {
+                if (payloadLength > 1)
+                {
+                    ((selectionParameter *)parameter)->value = payload[1];
+                }
+            }
             // While the command is executing, the handset will send `WRITE state=lcsQuery`.
             // paramCallbacks will set the value when nextStatusChunk == 0, or send any
             // remaining chunks when nextStatusChunk != 0
-            if (parameterArg == lcsQuery && nextStatusChunk != 0)
+            if (dataType == CRSF_COMMAND && parameterArg == lcsQuery && nextStatusChunk != 0)
             {
                 pushResponseChunk((commandParameter *)parameter, isElrs);
             }
@@ -327,7 +373,7 @@ void CRSFEndpoint::parameterUpdateReq(const crsf_addr_e origin, const bool isElr
         break;
 
     case CRSF_FRAMETYPE_PARAMETER_READ: {
-        DBGVLN("Read parameter %u %u", fieldId, fieldChunk);
+        DBGVLN("Read parameter %u %u", parameterIndex, parameterArg);
         if (parameterIndex < MAX_CRSF_PARAMETERS && parameter)
         {
             const auto field = (commandParameter *)parameter;

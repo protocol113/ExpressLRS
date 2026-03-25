@@ -12,6 +12,8 @@ extern const char *wifi_ap_ssid;
 extern const char *wifi_ap_password;
 extern const char *wifi_ap_address;
 
+constexpr uint8_t RUNTIME_FREQ_LABEL_LEN = 12;
+
 enum BuzzerMode {
     buzzerQuiet,
     buzzerOne,
@@ -30,16 +32,26 @@ typedef struct _options {
     int32_t     wifi_auto_on_interval;
     char        home_wifi_ssid[33];
     char        home_wifi_password[65];
+    uint8_t     runtime_freq_enabled;
+    uint8_t     runtime_freq_preset;
+    uint32_t    runtime_freq_start;
+    uint32_t    runtime_freq_stop;
+    uint8_t     runtime_freq_count;
+    uint8_t     runtime_freq_auto_count;
+    char        runtime_freq_label[RUNTIME_FREQ_LABEL_LEN + 1];
+    uint8_t     runtime_high_freq_enabled;
+    uint8_t     runtime_high_freq_preset;
+    uint32_t    runtime_high_freq_start;
+    uint32_t    runtime_high_freq_stop;
+    uint8_t     runtime_high_freq_count;
+    uint8_t     runtime_high_freq_auto_count;
+    char        runtime_high_freq_label[RUNTIME_FREQ_LABEL_LEN + 1];
 #if defined(TARGET_RX)
     uint32_t    uart_baud;
     bool        _unused1:1; // invert_tx
     bool        lock_on_first_connection:1;
     bool        dji_permanently_armed:1;
     bool        is_airport:1;
-    bool        customFreqEnabled:1;    // Custom frequency enabled
-    uint32_t    customFreqStart;        // Custom frequency start in Hz
-    uint32_t    customFreqStop;         // Custom frequency stop in Hz
-    uint8_t     customFreqCount;        // Custom frequency channel count
 #endif
 #if defined(TARGET_TX) || defined(UNIT_TEST)
     uint32_t    tlm_report_interval;

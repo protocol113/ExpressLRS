@@ -59,6 +59,19 @@ void FHSSrandomiseFHSSsequenceBuild(uint32_t seed, uint32_t freqCount, uint_fast
 
 // add domain info for Lua
 void addDomainInfo(char *version_domain, uint8_t maxlen);
+bool FHSSruntimeFreqEnabled();
+bool FHSSruntimeFreqValid();
+bool FHSSruntimeFreqPending();
+void FHSSactivateRuntimeFrequency();
+void FHSSsetRuntimeFrequency(uint32_t startHz, uint32_t stopHz, uint8_t channelCount, uint8_t presetSlot, const char *label);
+void FHSSdisableRuntimeFrequency();
+bool FHSShighRuntimeFreqEnabled();
+bool FHSShighRuntimeFreqValid();
+bool FHSShighRuntimeFreqPending();
+void FHSSactivateHighRuntimeFrequency();
+void FHSSactivatePendingRuntimeFrequencies();
+void FHSSsetHighRuntimeFrequency(uint32_t startHz, uint32_t stopHz, uint8_t channelCount, uint8_t presetSlot, const char *label);
+void FHSSdisableHighRuntimeFrequency();
 
 static inline uint32_t FHSSgetMinimumFreq(void)
 {
@@ -230,10 +243,3 @@ static inline uint32_t FHSSgetInitialGeminiFreq()
         }
     }
 }
-
-// Custom frequency configuration functions (sub-GHz radios only)
-#if defined(RADIO_SX127X) || defined(RADIO_LR1121)
-void FHSSsetCustomFrequency(uint32_t freqStart, uint32_t freqStop, uint8_t freqCount);
-void FHSSdisableCustomFrequency();
-bool FHSSisCustomFrequencyEnabled();
-#endif

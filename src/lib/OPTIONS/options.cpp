@@ -75,6 +75,20 @@ void saveOptions(Stream &stream, bool customised)
         doc["wifi-ssid"] = firmwareOptions.home_wifi_ssid;
         doc["wifi-password"] = firmwareOptions.home_wifi_password;
     }
+    doc["runtime-freq-enabled"] = firmwareOptions.runtime_freq_enabled;
+    doc["runtime-freq-preset"] = firmwareOptions.runtime_freq_preset;
+    doc["runtime-freq-start"] = firmwareOptions.runtime_freq_start;
+    doc["runtime-freq-stop"] = firmwareOptions.runtime_freq_stop;
+    doc["runtime-freq-count"] = firmwareOptions.runtime_freq_count;
+    doc["runtime-freq-auto-count"] = firmwareOptions.runtime_freq_auto_count;
+    doc["runtime-freq-label"] = firmwareOptions.runtime_freq_label;
+    doc["runtime-high-freq-enabled"] = firmwareOptions.runtime_high_freq_enabled;
+    doc["runtime-high-freq-preset"] = firmwareOptions.runtime_high_freq_preset;
+    doc["runtime-high-freq-start"] = firmwareOptions.runtime_high_freq_start;
+    doc["runtime-high-freq-stop"] = firmwareOptions.runtime_high_freq_stop;
+    doc["runtime-high-freq-count"] = firmwareOptions.runtime_high_freq_count;
+    doc["runtime-high-freq-auto-count"] = firmwareOptions.runtime_high_freq_auto_count;
+    doc["runtime-high-freq-label"] = firmwareOptions.runtime_high_freq_label;
     #if defined(TARGET_TX)
     doc["tlm-interval"] = firmwareOptions.tlm_report_interval;
     doc["fan-runtime"] = firmwareOptions.fan_min_runtime;
@@ -84,11 +98,6 @@ void saveOptions(Stream &stream, bool customised)
     doc["rcvr-uart-baud"] = firmwareOptions.uart_baud;
     doc["lock-on-first-connection"] = firmwareOptions.lock_on_first_connection;
     doc["dji-permanently-armed"] = firmwareOptions.dji_permanently_armed;
-    // Custom frequency settings for RX
-    doc["custom-freq-enabled"] = firmwareOptions.customFreqEnabled;
-    doc["custom-freq-start"] = firmwareOptions.customFreqStart;
-    doc["custom-freq-stop"] = firmwareOptions.customFreqStop;
-    doc["custom-freq-count"] = firmwareOptions.customFreqCount;
     #endif
     doc["is-airport"] = firmwareOptions.is_airport;
     doc["domain"] = firmwareOptions.domain;
@@ -184,6 +193,20 @@ static void options_LoadFromFlashOrFile(EspFlashStream &strmFlash)
     firmwareOptions.wifi_auto_on_interval = wifiInterval == -1 ? -1 : wifiInterval * 1000;
     strlcpy(firmwareOptions.home_wifi_ssid, doc["wifi-ssid"] | "", sizeof(firmwareOptions.home_wifi_ssid));
     strlcpy(firmwareOptions.home_wifi_password, doc["wifi-password"] | "", sizeof(firmwareOptions.home_wifi_password));
+    firmwareOptions.runtime_freq_enabled = doc["runtime-freq-enabled"] | false;
+    firmwareOptions.runtime_freq_preset = doc["runtime-freq-preset"] | 0;
+    firmwareOptions.runtime_freq_start = doc["runtime-freq-start"] | 903500000U;
+    firmwareOptions.runtime_freq_stop = doc["runtime-freq-stop"] | 926900000U;
+    firmwareOptions.runtime_freq_count = doc["runtime-freq-count"] | 40;
+    firmwareOptions.runtime_freq_auto_count = doc["runtime-freq-auto-count"] | true;
+    strlcpy(firmwareOptions.runtime_freq_label, doc["runtime-freq-label"] | "", sizeof(firmwareOptions.runtime_freq_label));
+    firmwareOptions.runtime_high_freq_enabled = doc["runtime-high-freq-enabled"] | false;
+    firmwareOptions.runtime_high_freq_preset = doc["runtime-high-freq-preset"] | 0;
+    firmwareOptions.runtime_high_freq_start = doc["runtime-high-freq-start"] | 2400400000U;
+    firmwareOptions.runtime_high_freq_stop = doc["runtime-high-freq-stop"] | 2479400000U;
+    firmwareOptions.runtime_high_freq_count = doc["runtime-high-freq-count"] | 80;
+    firmwareOptions.runtime_high_freq_auto_count = doc["runtime-high-freq-auto-count"] | true;
+    strlcpy(firmwareOptions.runtime_high_freq_label, doc["runtime-high-freq-label"] | "", sizeof(firmwareOptions.runtime_high_freq_label));
     #if defined(TARGET_TX)
     firmwareOptions.tlm_report_interval = doc["tlm-interval"] | 240U;
     firmwareOptions.fan_min_runtime = doc["fan-runtime"] | 30U;
@@ -205,11 +228,6 @@ static void options_LoadFromFlashOrFile(EspFlashStream &strmFlash)
     #endif
     firmwareOptions.lock_on_first_connection = doc["lock-on-first-connection"] | true;
     firmwareOptions.dji_permanently_armed = doc["dji-permanently-armed"] | false;
-    // Custom frequency settings for RX
-    firmwareOptions.customFreqEnabled = doc["custom-freq-enabled"] | false;
-    firmwareOptions.customFreqStart = doc["custom-freq-start"] | 900000000U;
-    firmwareOptions.customFreqStop = doc["custom-freq-stop"] | 930000000U;
-    firmwareOptions.customFreqCount = doc["custom-freq-count"] | 40;
     #endif
     firmwareOptions.domain = doc["domain"] | 0;
     firmwareOptions.flash_discriminator = doc["flash-discriminator"] | 0U;

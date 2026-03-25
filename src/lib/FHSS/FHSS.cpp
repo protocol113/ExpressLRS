@@ -17,23 +17,25 @@
 #endif
 
 const fhss_config_t domains[] = {
-    // WIDEBAND: 700-960MHz for maximum frequency diversity
-    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
-    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
-    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
-    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
-    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
-    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
-    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
-    {"700-960", FREQ_HZ_TO_REG_VAL(700000000), FREQ_HZ_TO_REG_VAL(960000000), 80, 830000000},
+    {"AU915",  FREQ_HZ_TO_REG_VAL(915500000), FREQ_HZ_TO_REG_VAL(926900000), 20, 921000000},
+    {"FCC915", FREQ_HZ_TO_REG_VAL(903500000), FREQ_HZ_TO_REG_VAL(926900000), 40, 915000000},
+    {"EU868",  FREQ_HZ_TO_REG_VAL(863275000), FREQ_HZ_TO_REG_VAL(869575000), 13, 868000000},
+    {"IN866",  FREQ_HZ_TO_REG_VAL(865375000), FREQ_HZ_TO_REG_VAL(866950000), 4, 866000000},
+    {"AU433",  FREQ_HZ_TO_REG_VAL(433420000), FREQ_HZ_TO_REG_VAL(434420000), 3, 434000000},
+    {"EU433",  FREQ_HZ_TO_REG_VAL(433100000), FREQ_HZ_TO_REG_VAL(434450000), 3, 434000000},
+    {"US433",  FREQ_HZ_TO_REG_VAL(433250000), FREQ_HZ_TO_REG_VAL(438000000), 8, 434000000},
+    {"US433W",  FREQ_HZ_TO_REG_VAL(423500000), FREQ_HZ_TO_REG_VAL(438000000), 20, 434000000},
 };
 
 #if defined(RADIO_LR1121)
 const fhss_config_t domainsDualBand[] = {
     {
-    // WIDEBAND S-BAND: 1.9-2.2GHz (full LR1121 S-band range)
-    "SBAND19-22",
-    FREQ_HZ_TO_REG_VAL(1900000000), FREQ_HZ_TO_REG_VAL(2200000000), 80, 2050000000}
+    #if defined(Regulatory_Domain_EU_CE_2400)
+        "CE_LBT",
+    #else
+        "ISM2G4",
+    #endif
+    FREQ_HZ_TO_REG_VAL(2400400000), FREQ_HZ_TO_REG_VAL(2479400000), 80, 2440000000}
 };
 #endif
 
@@ -45,9 +47,9 @@ const fhss_config_t domains[] = {
     #if defined(Regulatory_Domain_EU_CE_2400)
         "CE_LBT",
     #elif defined(Regulatory_Domain_ISM_2400)
-        "CUST2G2",
+        "ISM2G4",
     #endif
-    FREQ_HZ_TO_REG_VAL(2200000000), FREQ_HZ_TO_REG_VAL(2300000000), 80, 2250000000}
+    FREQ_HZ_TO_REG_VAL(2400400000), FREQ_HZ_TO_REG_VAL(2479400000), 80, 2440000000}
 };
 #endif
 
@@ -85,10 +87,98 @@ constexpr uint8_t VERSION_DOMAIN_MAXLEN = 26 + 1;   // max. number of characters
                                                     // on color LCD radios w/o being overwritten by the commit info
 char version_domain[VERSION_DOMAIN_MAXLEN];
 
+static fhss_config_t runtimeDomain = {"CUSTOM", 0, 0, 0, 0};
+static fhss_config_t runtimeDualBandDomain = {"CUSTOM2G4", 0, 0, 0, 0};
+static bool runtimeFreqActive = false;
+static bool runtimeHighFreqActive = false;
+
+static bool isValidRuntimeFrequency(uint32_t startHz, uint32_t stopHz, uint8_t channelCount, uint32_t minHz, uint32_t maxHz)
+{
+#if !defined(RADIO_LR1121)
+    (void)startHz;
+    (void)stopHz;
+    (void)channelCount;
+    (void)minHz;
+    (void)maxHz;
+    return false;
+#else
+    return channelCount >= 4
+        && channelCount <= 80
+        && startHz >= minHz
+        && stopHz <= maxHz
+        && stopHz > startHz;
+#endif
+}
+
+static const char *resolveRuntimeLabel(const char *label, const char *fallback)
+{
+    if (label[0] != '\0')
+    {
+        return label;
+    }
+
+    return fallback;
+}
+
+static bool isValidPrimaryRuntimeFrequency(uint32_t startHz, uint32_t stopHz, uint8_t channelCount)
+{
+    return isValidRuntimeFrequency(startHz, stopHz, channelCount, 700000000U, 960000000U);
+}
+
+static bool isValidHighRuntimeFrequency(uint32_t startHz, uint32_t stopHz, uint8_t channelCount)
+{
+    return isValidRuntimeFrequency(startHz, stopHz, channelCount, 1900000000U, 2500000000U);
+}
+
+static const fhss_config_t *resolvePrimaryDomain()
+{
+#if defined(RADIO_LR1121)
+    if (firmwareOptions.runtime_freq_enabled
+        && runtimeFreqActive
+        && isValidPrimaryRuntimeFrequency(
+            firmwareOptions.runtime_freq_start,
+            firmwareOptions.runtime_freq_stop,
+            firmwareOptions.runtime_freq_count))
+    {
+        runtimeDomain.domain = resolveRuntimeLabel(firmwareOptions.runtime_freq_label, "CUSTOM");
+        runtimeDomain.freq_start = FREQ_HZ_TO_REG_VAL(firmwareOptions.runtime_freq_start);
+        runtimeDomain.freq_stop = FREQ_HZ_TO_REG_VAL(firmwareOptions.runtime_freq_stop);
+        runtimeDomain.freq_count = firmwareOptions.runtime_freq_count;
+        runtimeDomain.freq_center = (firmwareOptions.runtime_freq_start + firmwareOptions.runtime_freq_stop) / 2U;
+        return &runtimeDomain;
+    }
+#endif
+
+    return &domains[firmwareOptions.domain];
+}
+
+static const fhss_config_t *resolveHighBandDomain()
+{
+#if defined(RADIO_LR1121)
+    if (firmwareOptions.runtime_high_freq_enabled
+        && runtimeHighFreqActive
+        && isValidHighRuntimeFrequency(
+            firmwareOptions.runtime_high_freq_start,
+            firmwareOptions.runtime_high_freq_stop,
+            firmwareOptions.runtime_high_freq_count))
+    {
+        runtimeDualBandDomain.domain = resolveRuntimeLabel(firmwareOptions.runtime_high_freq_label, "CUSTOM2G4");
+        runtimeDualBandDomain.freq_start = FREQ_HZ_TO_REG_VAL(firmwareOptions.runtime_high_freq_start);
+        runtimeDualBandDomain.freq_stop = FREQ_HZ_TO_REG_VAL(firmwareOptions.runtime_high_freq_stop);
+        runtimeDualBandDomain.freq_count = firmwareOptions.runtime_high_freq_count;
+        runtimeDualBandDomain.freq_center = (firmwareOptions.runtime_high_freq_start + firmwareOptions.runtime_high_freq_stop) / 2U;
+        return &runtimeDualBandDomain;
+    }
+    return &domainsDualBand[0];
+#else
+    return nullptr;
+#endif
+}
+
 
 void FHSSrandomiseFHSSsequence(const uint32_t seed)
 {
-    FHSSconfig = &domains[firmwareOptions.domain];
+    FHSSconfig = resolvePrimaryDomain();
     sync_channel = FHSSconfig->freq_count / 2;
     freq_spread = (FHSSconfig->freq_stop - FHSSconfig->freq_start) * FREQ_SPREAD_SCALE / (FHSSconfig->freq_count - 1);
     primaryBandCount = (FHSS_SEQUENCE_LEN / FHSSconfig->freq_count) * FHSSconfig->freq_count;
@@ -99,7 +189,7 @@ void FHSSrandomiseFHSSsequence(const uint32_t seed)
     FHSSrandomiseFHSSsequenceBuild(seed, FHSSconfig->freq_count, sync_channel, FHSSsequence);
 
 #if defined(RADIO_LR1121)
-    FHSSconfigDualBand = &domainsDualBand[0];
+    FHSSconfigDualBand = resolveHighBandDomain();
     sync_channel_DualBand = FHSSconfigDualBand->freq_count / 2;
     freq_spread_DualBand = (FHSSconfigDualBand->freq_stop - FHSSconfigDualBand->freq_start) * FREQ_SPREAD_SCALE / (FHSSconfigDualBand->freq_count - 1);
     secondaryBandCount = (FHSS_SEQUENCE_LEN / FHSSconfigDualBand->freq_count) * FHSSconfigDualBand->freq_count;
@@ -217,60 +307,90 @@ bool isUsingPrimaryFreqBand()
     return FHSSusePrimaryFreqBand;
 }
 
-#if defined(RADIO_SX127X) || defined(RADIO_LR1121)
-// Custom frequency configuration for runtime changes via Lua
-static fhss_config_t customDomain = {"CUSTOM", 0, 0, 0, 0};
-static bool customFreqEnabled = false;
-
-void FHSSsetCustomFrequency(uint32_t freqStart, uint32_t freqStop, uint8_t freqCount)
+bool FHSSruntimeFreqEnabled()
 {
-    // Validate parameters
-    if (freqCount < 4 || freqCount > 80) {
-        DBGLN("Custom freq: invalid channel count %u", freqCount);
-        return;
-    }
-    if (freqStop <= freqStart) {
-        DBGLN("Custom freq: stop must be > start");
-        return;
-    }
-
-    // Configure custom domain
-    customDomain.freq_start = FREQ_HZ_TO_REG_VAL(freqStart);
-    customDomain.freq_stop = FREQ_HZ_TO_REG_VAL(freqStop);
-    customDomain.freq_count = freqCount;
-    customDomain.freq_center = (freqStart + freqStop) / 2;
-
-    // Switch to custom domain
-    FHSSconfig = &customDomain;
-    customFreqEnabled = true;
-
-    // Recalculate FHSS parameters
-    sync_channel = FHSSconfig->freq_count / 2;
-    freq_spread = (FHSSconfig->freq_stop - FHSSconfig->freq_start) * FREQ_SPREAD_SCALE / (FHSSconfig->freq_count - 1);
-    primaryBandCount = (FHSS_SEQUENCE_LEN / FHSSconfig->freq_count) * FHSSconfig->freq_count;
-
-    DBGLN("Custom Domain: %u-%u MHz, %u channels, sync=%u",
-        freqStart / 1000000, freqStop / 1000000, FHSSconfig->freq_count, sync_channel);
+    return firmwareOptions.runtime_freq_enabled;
 }
 
-void FHSSdisableCustomFrequency()
+bool FHSSruntimeFreqValid()
 {
-    if (customFreqEnabled) {
-        // Restore default domain
-        FHSSconfig = &domains[firmwareOptions.domain];
-        customFreqEnabled = false;
-
-        // Recalculate FHSS parameters
-        sync_channel = FHSSconfig->freq_count / 2;
-        freq_spread = (FHSSconfig->freq_stop - FHSSconfig->freq_start) * FREQ_SPREAD_SCALE / (FHSSconfig->freq_count - 1);
-        primaryBandCount = (FHSS_SEQUENCE_LEN / FHSSconfig->freq_count) * FHSSconfig->freq_count;
-
-        DBGLN("Restored default domain %s", FHSSconfig->domain);
-    }
+    return isValidPrimaryRuntimeFrequency(
+        firmwareOptions.runtime_freq_start,
+        firmwareOptions.runtime_freq_stop,
+        firmwareOptions.runtime_freq_count);
 }
 
-bool FHSSisCustomFrequencyEnabled()
+bool FHSSruntimeFreqPending()
 {
-    return customFreqEnabled;
+    return firmwareOptions.runtime_freq_enabled && !runtimeFreqActive && FHSSruntimeFreqValid();
 }
-#endif
+
+void FHSSactivateRuntimeFrequency()
+{
+    runtimeFreqActive = firmwareOptions.runtime_freq_enabled && FHSSruntimeFreqValid();
+}
+
+void FHSSsetRuntimeFrequency(uint32_t startHz, uint32_t stopHz, uint8_t channelCount, uint8_t presetSlot, const char *label)
+{
+    firmwareOptions.runtime_freq_enabled = true;
+    firmwareOptions.runtime_freq_start = startHz;
+    firmwareOptions.runtime_freq_stop = stopHz;
+    firmwareOptions.runtime_freq_count = channelCount;
+    firmwareOptions.runtime_freq_preset = presetSlot;
+    strlcpy(firmwareOptions.runtime_freq_label, label ? label : "CUSTOM", sizeof(firmwareOptions.runtime_freq_label));
+}
+
+void FHSSdisableRuntimeFrequency()
+{
+    firmwareOptions.runtime_freq_enabled = false;
+    firmwareOptions.runtime_freq_preset = 0;
+    firmwareOptions.runtime_freq_label[0] = '\0';
+    runtimeFreqActive = false;
+}
+
+bool FHSShighRuntimeFreqEnabled()
+{
+    return firmwareOptions.runtime_high_freq_enabled;
+}
+
+bool FHSShighRuntimeFreqValid()
+{
+    return isValidHighRuntimeFrequency(
+        firmwareOptions.runtime_high_freq_start,
+        firmwareOptions.runtime_high_freq_stop,
+        firmwareOptions.runtime_high_freq_count);
+}
+
+bool FHSShighRuntimeFreqPending()
+{
+    return firmwareOptions.runtime_high_freq_enabled && !runtimeHighFreqActive && FHSShighRuntimeFreqValid();
+}
+
+void FHSSactivateHighRuntimeFrequency()
+{
+    runtimeHighFreqActive = firmwareOptions.runtime_high_freq_enabled && FHSShighRuntimeFreqValid();
+}
+
+void FHSSactivatePendingRuntimeFrequencies()
+{
+    FHSSactivateRuntimeFrequency();
+    FHSSactivateHighRuntimeFrequency();
+}
+
+void FHSSsetHighRuntimeFrequency(uint32_t startHz, uint32_t stopHz, uint8_t channelCount, uint8_t presetSlot, const char *label)
+{
+    firmwareOptions.runtime_high_freq_enabled = true;
+    firmwareOptions.runtime_high_freq_start = startHz;
+    firmwareOptions.runtime_high_freq_stop = stopHz;
+    firmwareOptions.runtime_high_freq_count = channelCount;
+    firmwareOptions.runtime_high_freq_preset = presetSlot;
+    strlcpy(firmwareOptions.runtime_high_freq_label, label ? label : "CUSTOM2G4", sizeof(firmwareOptions.runtime_high_freq_label));
+}
+
+void FHSSdisableHighRuntimeFrequency()
+{
+    firmwareOptions.runtime_high_freq_enabled = false;
+    firmwareOptions.runtime_high_freq_preset = 0;
+    firmwareOptions.runtime_high_freq_label[0] = '\0';
+    runtimeHighFreqActive = false;
+}
