@@ -87,13 +87,16 @@ typedef enum : uint8_t
 } crsf_frame_type_e;
 
 typedef enum : uint8_t {
-    CRSF_COMMAND_SUBCMD_RX = 0x10
+    CRSF_COMMAND_SUBCMD_RX = 0x10,
+    CRSF_COMMAND_SUBCMD_ELRS = 0x2d
 } crsf_command_e;
 
 typedef enum : uint8_t {
     CRSF_COMMAND_SUBCMD_RX_BIND = 0x01,
     CRSF_COMMAND_MODEL_SELECT_ID = 0x05,
     CRSF_COMMAND_SUBCMD_RX_RUNTIME_FREQ = 0x06,
+    CRSF_COMMAND_SUBCMD_LINK_CRYPTO_PROPOSE = 0x20,
+    CRSF_COMMAND_SUBCMD_LINK_CRYPTO_ACCEPT = 0x21,
     CRSF_HANDSET_SUBCMD_TIMING = 0x10,
 } crsf_subcommand_e;
 

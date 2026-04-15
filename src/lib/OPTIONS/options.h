@@ -13,6 +13,7 @@ extern const char *wifi_ap_password;
 extern const char *wifi_ap_address;
 
 constexpr uint8_t RUNTIME_FREQ_LABEL_LEN = 12;
+constexpr uint8_t LINK_CRYPTO_KEY_LEN = 16;
 
 enum BuzzerMode {
     buzzerQuiet,
@@ -32,6 +33,9 @@ typedef struct _options {
     int32_t     wifi_auto_on_interval;
     char        home_wifi_ssid[33];
     char        home_wifi_password[65];
+    uint8_t     hasLinkCryptoKey;
+    uint8_t     link_crypto_enabled;
+    uint8_t     link_crypto_key[LINK_CRYPTO_KEY_LEN];
     uint8_t     runtime_freq_enabled;
     uint8_t     runtime_freq_preset;
     uint32_t    runtime_freq_start;

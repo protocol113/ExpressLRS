@@ -11,6 +11,7 @@
 #include "PFD.h"
 #include "dynpower.h"
 #include "freqTable.h"
+#include "LinkCrypto.h"
 #include "msp.h"
 #include "msptypes.h"
 #include "options.h"
@@ -105,6 +106,7 @@ RxConfig config;
 CRSFRouter crsfRouter;
 RXEndpoint crsfReceiver;
 RXOTAConnector otaConnector;
+link_crypto_ctx_t g_linkCryptoRx;
 
 bool crsfBatterySensorDetected = false;
 bool crsfBaroSensorDetected = false;
@@ -520,9 +522,17 @@ bool ICACHE_RAM_ATTR HandleSendDataDl()
     }
 
     OtaGeneratePacketCrc(&otaPkt);
+    if (LinkCryptoIsActive(&g_linkCryptoRx))
+    {
+        LinkCryptoEncrypt(&g_linkCryptoRx, LINK_CRYPTO_DOWNLINK, &otaPkt, OtaIsFullRes ? OTA8_PACKET_SIZE : OTA4_PACKET_SIZE);
+    }
     if (sendGeminiBuffer)
     {
         OtaGeneratePacketCrc(&otaPktGemini);
+        if (LinkCryptoIsActive(&g_linkCryptoRx))
+        {
+            LinkCryptoEncrypt(&g_linkCryptoRx, LINK_CRYPTO_DOWNLINK, &otaPktGemini, OtaIsFullRes ? OTA8_PACKET_SIZE : OTA4_PACKET_SIZE);
+        }
     }
 
     SX12XX_Radio_Number_t transmittingRadio;
@@ -806,6 +816,7 @@ void LostConnection(bool resumeRx)
     LPF_Offset.init(0);
     LPF_OffsetDx.init(0);
     alreadyTLMresp = false;
+    LinkCryptoReset(&g_linkCryptoRx);
 
     if (!InBindingMode)
     {
@@ -1040,6 +1051,7 @@ static bool ICACHE_RAM_ATTR ProcessRfPacket_SYNC(uint32_t const now, OTA_Sync_s 
     // Will change the packet air rate in loop() if this changes
     ExpressLRS_nextAirRateIndex = enumRatetoIndex((expresslrs_RFrates_e)otaSync->rfRateEnum);
     updateSwitchModePendingFromOta(otaSync->switchEncMode);
+    LinkCryptoOnSyncReceived(&g_linkCryptoRx, otaSync->cryptoActive != 0);
 
     // Update TLM ratio, should never be TLM_RATIO_STD/DISARMED, the TX calculates the correct value for the RX
     expresslrs_tlm_ratio_e TLMrateIn = (expresslrs_tlm_ratio_e)(otaSync->newTlmRatio + (uint8_t)TLM_RATIO_NO_TLM);
@@ -1088,7 +1100,12 @@ bool ICACHE_RAM_ATTR ProcessRFPacket(SX12xxDriverCommon::rx_status const status)
     OTA_Packet_s * const otaPktPtr = (OTA_Packet_s * const)Radio.RXdataBuffer;
     OTA_Packet_s * const otaPktPtrSecond = (OTA_Packet_s * const)Radio.RXdataBufferSecond;
 
-    if (!OtaValidatePacketCrc(otaPktPtr))
+    bool packetValid = OtaValidatePacketCrc(otaPktPtr);
+    if (!packetValid && LinkCryptoIsActive(&g_linkCryptoRx))
+    {
+        packetValid = LinkCryptoDecrypt(&g_linkCryptoRx, LINK_CRYPTO_UPLINK, otaPktPtr, OtaIsFullRes ? OTA8_PACKET_SIZE : OTA4_PACKET_SIZE);
+    }
+    if (!packetValid)
     {
         DBGVLN("CRC error");
         #if defined(DEBUG_RX_SCOREBOARD)
@@ -1112,7 +1129,12 @@ bool ICACHE_RAM_ATTR ProcessRFPacket(SX12xxDriverCommon::rx_status const status)
     Radio.CheckForSecondPacket();
     if (Radio.hasSecondRadioGotData)
     {
-        if (!OtaValidatePacketCrc(otaPktPtrSecond))
+        bool secondValid = OtaValidatePacketCrc(otaPktPtrSecond);
+        if (!secondValid && LinkCryptoIsActive(&g_linkCryptoRx))
+        {
+            secondValid = LinkCryptoDecrypt(&g_linkCryptoRx, LINK_CRYPTO_UPLINK, otaPktPtrSecond, OtaIsFullRes ? OTA8_PACKET_SIZE : OTA4_PACKET_SIZE);
+        }
+        if (!secondValid)
         {
             Radio.hasSecondRadioGotData = false;
         }
@@ -1539,6 +1561,7 @@ static void setupBindingFromConfig()
         UID[0], UID[1], UID[2], UID[3], UID[4], UID[5], config.GetModelId());
 
     OtaUpdateCrcInitFromUid();
+    LinkCryptoInit(&g_linkCryptoRx, false, firmwareOptions);
 }
 
 static void setupRadio()
@@ -1647,6 +1670,7 @@ static void EnterBindingMode()
     OtaCrcInitializer = OTA_VERSION_ID;
     OtaNonce = 0;
     InBindingMode = true;
+    LinkCryptoReset(&g_linkCryptoRx);
 
     // Start attempting to bind
     // Lock the RF rate and freq while binding

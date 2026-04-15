@@ -37,7 +37,10 @@ def process_json_flag(define):
     parts = re.search(r"-D(.*)\s*=\s*(.*)$", define)
     if parts and define.startswith("-D"):
         if parts.group(1) == "MY_BINDING_PHRASE":
-            json_flags['uid'] = [x for x in hashlib.md5(define.encode()).digest()[0:6]]
+            binding_hash = hashlib.md5(define.encode()).digest()
+            json_flags['uid'] = [x for x in binding_hash[0:6]]
+            json_flags['binding-hash'] = [x for x in binding_hash]
+            json_flags['link-crypto-enabled'] = True
         if parts.group(1) == "HOME_WIFI_SSID":
             json_flags['wifi-ssid'] = dequote(parts.group(2))
         if parts.group(1) == "HOME_WIFI_PASSWORD":

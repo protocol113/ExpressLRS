@@ -31,6 +31,7 @@ void sendMAVLinkTelemetryToBackpack(uint8_t *) {}
 
 #include "CRSFParser.h"
 #include "CRSFRouter.h"
+#include "LinkCrypto.h"
 #include "MAVLink.h"
 #include "TXModuleEndpoint.h"
 #include "TXOTAConnector.h"
@@ -76,6 +77,8 @@ static uint32_t LastTLMpacketRecv_Ms = 0;
 static uint32_t LinkStatsLastReported_Ms = 0;
 static uint32_t RxDisconnected_Ms = 0;
 static bool commitInProgress = false;
+static uint32_t lastCryptoProposalMs = 0;
+static constexpr uint32_t LINK_CRYPTO_RETRY_MS = 500;
 
 LQCALC<100> LqTQly;
 
@@ -97,6 +100,7 @@ TXModuleEndpoint crsfTransmitter;
 TXOTAConnector otaConnector;
 TXUSBConnector usbConnector;
 CRSFParser crsfParser;
+link_crypto_ctx_t g_linkCryptoTx;
 
 device_affinity_t ui_devices[] = {
   {&Handset_device, 1},
@@ -234,7 +238,12 @@ static bool ICACHE_RAM_ATTR ProcessDownlinkPacket(SX12xxDriverCommon::rx_status 
   OTA_Packet_s * const otaPktPtr = (OTA_Packet_s * const)Radio.RXdataBuffer;
   OTA_Packet_s * const otaPktPtrSecond = (OTA_Packet_s * const)Radio.RXdataBufferSecond;
 
-  if (!OtaValidatePacketCrc(otaPktPtr))
+  bool packetValid = OtaValidatePacketCrc(otaPktPtr);
+  if (!packetValid && LinkCryptoIsActive(&g_linkCryptoTx))
+  {
+    packetValid = LinkCryptoDecrypt(&g_linkCryptoTx, LINK_CRYPTO_DOWNLINK, otaPktPtr, OtaIsFullRes ? OTA8_PACKET_SIZE : OTA4_PACKET_SIZE);
+  }
+  if (!packetValid)
   {
     DBGLN("TLM crc error");
     return false;
@@ -246,7 +255,12 @@ static bool ICACHE_RAM_ATTR ProcessDownlinkPacket(SX12xxDriverCommon::rx_status 
   Radio.CheckForSecondPacket();
   if (Radio.hasSecondRadioGotData)
   {
-    if (!OtaValidatePacketCrc(otaPktPtrSecond))
+    bool secondValid = OtaValidatePacketCrc(otaPktPtrSecond);
+    if (!secondValid && LinkCryptoIsActive(&g_linkCryptoTx))
+    {
+      secondValid = LinkCryptoDecrypt(&g_linkCryptoTx, LINK_CRYPTO_DOWNLINK, otaPktPtrSecond, OtaIsFullRes ? OTA8_PACKET_SIZE : OTA4_PACKET_SIZE);
+    }
+    if (!secondValid)
     {
       Radio.hasSecondRadioGotData = false;
     }
@@ -406,6 +420,7 @@ void ICACHE_RAM_ATTR GenerateSyncPacketData(OTA_Sync_s * const syncPtr)
   syncPtr->newTlmRatio = newTlmRatio - TLM_RATIO_NO_TLM;
   syncPtr->geminiMode = inGeminiMode();
   syncPtr->otaProtocol = config.GetLinkMode();
+  syncPtr->cryptoActive = LinkCryptoIsActive(&g_linkCryptoTx) || LinkCryptoShouldAdvertiseActivation(&g_linkCryptoTx);
   syncPtr->UID4 = UID[4];
   syncPtr->UID5 = UID[5];
 
@@ -604,6 +619,14 @@ void ICACHE_RAM_ATTR SendRCdataToRF()
 
   ///// Next, Calculate the CRC and put it into the buffer /////
   OtaGeneratePacketCrc(&otaPkt);
+  if (LinkCryptoIsActive(&g_linkCryptoTx))
+  {
+    LinkCryptoEncrypt(&g_linkCryptoTx, LINK_CRYPTO_UPLINK, &otaPkt, OtaIsFullRes ? OTA8_PACKET_SIZE : OTA4_PACKET_SIZE);
+  }
+  if (otaPkt.std.type == PACKET_TYPE_SYNC)
+  {
+    LinkCryptoOnSyncSent(&g_linkCryptoTx, LinkCryptoShouldAdvertiseActivation(&g_linkCryptoTx) || LinkCryptoIsActive(&g_linkCryptoTx));
+  }
 
   SX12XX_Radio_Number_t transmittingRadio = SX12XX_Radio_All;
 
@@ -734,6 +757,48 @@ static void UARTconnected()
   }
   // But start the timer to get OpenTX sync going and a ModelID update sent
   hwTimer::resume();
+}
+
+static void SendCryptoProposal()
+{
+  uint8_t txNonce[LINK_CRYPTO_NONCE_LEN];
+  if (LinkCryptoGetState(&g_linkCryptoTx) == LINK_CRYPTO_STATE_OFF)
+  {
+    LinkCryptoMakeNonce(txNonce, micros(), uidMacSeedGet() ^ millis() ^ OtaNonce);
+    if (!LinkCryptoBeginProposal(&g_linkCryptoTx, txNonce))
+    {
+      return;
+    }
+  }
+  else
+  {
+    memcpy(txNonce, g_linkCryptoTx.txNonce, sizeof(txNonce));
+  }
+
+  uint8_t buffer[CRSF_EXT_FRAME_SIZE(2 + 1 + LINK_CRYPTO_NONCE_LEN) + CRSF_FRAME_NOT_COUNTED_BYTES] = {0};
+  auto *command = reinterpret_cast<crsf_ext_header_t *>(buffer);
+  uint8_t *payload = buffer + sizeof(crsf_ext_header_t);
+  payload[0] = CRSF_COMMAND_SUBCMD_ELRS;
+  payload[1] = CRSF_COMMAND_SUBCMD_LINK_CRYPTO_PROPOSE;
+  payload[2] = LINK_CRYPTO_VERSION;
+  memcpy(&payload[3], txNonce, LINK_CRYPTO_NONCE_LEN);
+  crsfRouter.SetExtendedHeaderAndCrc(command, CRSF_FRAMETYPE_COMMAND, CRSF_EXT_FRAME_SIZE(2 + 1 + LINK_CRYPTO_NONCE_LEN), CRSF_ADDRESS_CRSF_RECEIVER, CRSF_ADDRESS_CRSF_TRANSMITTER);
+  crsfRouter.deliverMessageTo(CRSF_ADDRESS_CRSF_RECEIVER, reinterpret_cast<crsf_header_t *>(buffer));
+  lastCryptoProposalMs = millis();
+}
+
+static void MaybeStartLinkCrypto()
+{
+  if (!LinkCryptoIsEnabled(&g_linkCryptoTx) || InBindingMode || connectionState != connected)
+  {
+    return;
+  }
+
+  link_crypto_state_t state = LinkCryptoGetState(&g_linkCryptoTx);
+  if ((state == LINK_CRYPTO_STATE_OFF || state == LINK_CRYPTO_STATE_PROPOSED) && millis() - lastCryptoProposalMs >= LINK_CRYPTO_RETRY_MS)
+  {
+    SendCryptoProposal();
+  }
 }
 
 void ResetPower()
@@ -915,6 +980,7 @@ static void UpdateConnectDisconnectStatus()
       DBGLN("got downlink conn");
       RxDisconnected_Ms = 0;
       setConnectionState(connected);
+      lastCryptoProposalMs = 0;
 
       apInputBuffer.flush();
       apOutputBuffer.flush();
@@ -928,6 +994,8 @@ static void UpdateConnectDisconnectStatus()
     setConnectionState(disconnected);
     RxDisconnected_Ms = now;
     connectionHasModelMatch = true;
+    LinkCryptoReset(&g_linkCryptoTx);
+    lastCryptoProposalMs = 0;
   }
 }
 
@@ -1019,6 +1087,8 @@ static void EnterBindingMode()
   OtaCrcInitializer = OTA_VERSION_ID;
   OtaNonce = 0; // Lock the OtaNonce to prevent syncspam packets
   InBindingMode = true; // Set binding mode before SetRFLinkRate() for correct IQ
+  LinkCryptoReset(&g_linkCryptoTx);
+  lastCryptoProposalMs = 0;
 
   // Start attempting to bind
   // Lock the RF rate and freq while binding
@@ -1046,6 +1116,8 @@ static void ExitBindingMode()
   SetRFLinkRate(config.GetRate()); //return to original rate
 
   DBGLN("Exiting binding mode");
+  LinkCryptoReset(&g_linkCryptoTx);
+  lastCryptoProposalMs = 0;
 }
 
 void EnterBindingModeSafely()
@@ -1418,6 +1490,7 @@ void setup()
     DBGLN("Initialised devices");
 
     setupBindingFromConfig();
+    LinkCryptoInit(&g_linkCryptoTx, true, firmwareOptions);
     FHSSrandomiseFHSSsequence(uidMacSeedGet());
 
     Radio.RXdoneCallback = &RXdoneISR;
@@ -1511,6 +1584,8 @@ void loop()
   {
     UpdateConnectDisconnectStatus();
   }
+
+  MaybeStartLinkCrypto();
 
   // Update UI devices
   devicesUpdate(now);

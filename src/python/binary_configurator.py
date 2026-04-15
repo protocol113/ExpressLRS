@@ -43,6 +43,9 @@ def generateUID(phrase):
         uid = hashlib.md5(("-DMY_BINDING_PHRASE=\""+phrase+"\"").encode()).digest()[0:6]
     return uid
 
+def generateBindingHash(phrase):
+    return hashlib.md5(("-DMY_BINDING_PHRASE=\""+phrase+"\"").encode()).digest()
+
 def FREQ_HZ_TO_REG_VAL_SX127X(freq):
     return int(freq/61.03515625)
 
@@ -71,6 +74,8 @@ def patch_unified(args, options):
     json_flags = {}
     if args.phrase is not None:
         json_flags['uid'] = [x for x in generateUID(args.phrase)]
+        json_flags['binding-hash'] = [x for x in generateBindingHash(args.phrase)]
+        json_flags['link-crypto-enabled'] = True
     if args.ssid is not None:
         json_flags['wifi-ssid'] = args.ssid
     if args.password is not None and args.ssid is not None:

@@ -4,8 +4,10 @@
 #include "config.h"
 #include "devMSPVTX.h"
 #include "devVTXSPI.h"
+#include "CRSFRouter.h"
 #include "freqTable.h"
 #include "FHSS.h"
+#include "LinkCrypto.h"
 #include "logging.h"
 #include "msptypes.h"
 #include "options.h"
@@ -13,6 +15,8 @@
 
 extern void reset_into_bootloader();
 extern void EnterBindingModeSafely();
+extern link_crypto_ctx_t g_linkCryptoRx;
+extern CRSFRouter crsfRouter;
 
 static uint32_t readU32(const uint8_t *data)
 {
@@ -26,6 +30,19 @@ static void copyRuntimeLabel(char *target, const uint8_t *source)
 {
     memcpy(target, source, RUNTIME_FREQ_LABEL_LEN + 1);
     target[RUNTIME_FREQ_LABEL_LEN] = '\0';
+}
+
+static void sendCryptoAccept(const uint8_t rxNonce[LINK_CRYPTO_NONCE_LEN])
+{
+    uint8_t buffer[CRSF_EXT_FRAME_SIZE(2 + 1 + LINK_CRYPTO_NONCE_LEN) + CRSF_FRAME_NOT_COUNTED_BYTES] = {0};
+    auto *command = reinterpret_cast<crsf_ext_header_t *>(buffer);
+    uint8_t *payload = buffer + sizeof(crsf_ext_header_t);
+    payload[0] = CRSF_COMMAND_SUBCMD_ELRS;
+    payload[1] = CRSF_COMMAND_SUBCMD_LINK_CRYPTO_ACCEPT;
+    payload[2] = LINK_CRYPTO_VERSION;
+    memcpy(&payload[3], rxNonce, LINK_CRYPTO_NONCE_LEN);
+    crsfRouter.SetExtendedHeaderAndCrc(command, CRSF_FRAMETYPE_COMMAND, CRSF_EXT_FRAME_SIZE(2 + 1 + LINK_CRYPTO_NONCE_LEN), CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_CRSF_RECEIVER);
+    crsfRouter.deliverMessageTo(CRSF_ADDRESS_CRSF_TRANSMITTER, reinterpret_cast<crsf_header_t *>(buffer));
 }
 
 RXEndpoint::RXEndpoint()
@@ -70,6 +87,18 @@ void RXEndpoint::handleMessage(const crsf_header_t *message)
     if (message->type == CRSF_FRAMETYPE_COMMAND && extMessage->payload[0] == CRSF_COMMAND_SUBCMD_RX && extMessage->payload[1] == CRSF_COMMAND_SUBCMD_RX_BIND)
     {
         EnterBindingModeSafely();
+    }
+    else if (message->type == CRSF_FRAMETYPE_COMMAND
+        && extMessage->payload[0] == CRSF_COMMAND_SUBCMD_ELRS
+        && extMessage->payload[1] == CRSF_COMMAND_SUBCMD_LINK_CRYPTO_PROPOSE
+        && extMessage->payload[2] == LINK_CRYPTO_VERSION)
+    {
+        uint8_t rxNonce[LINK_CRYPTO_NONCE_LEN];
+        LinkCryptoMakeNonce(rxNonce, micros(), uidMacSeedGet() ^ millis() ^ OtaNonce);
+        if (LinkCryptoHandleProposal(&g_linkCryptoRx, &extMessage->payload[3], rxNonce))
+        {
+            sendCryptoAccept(rxNonce);
+        }
     }
     else if (message->type == CRSF_FRAMETYPE_COMMAND && extMessage->payload[0] == CRSF_COMMAND_SUBCMD_RX && extMessage->payload[1] == CRSF_COMMAND_SUBCMD_RX_RUNTIME_FREQ)
     {

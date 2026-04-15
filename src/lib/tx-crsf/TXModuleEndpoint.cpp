@@ -2,11 +2,14 @@
 
 #include "rxtx_intf.h"
 #include "CRSFHandset.h"
+#include "LinkCrypto.h"
 #include "logging.h"
 
 #include "FHSS.h"
 #include "device.h"
 #include "config.h"
+
+extern link_crypto_ctx_t g_linkCryptoTx;
 
 #if defined(PLATFORM_ESP32)
 RTC_DATA_ATTR int rtcModelId = 0;
@@ -58,6 +61,16 @@ void TXModuleEndpoint::handleMessage(const crsf_header_t *message)
         rtcModelId = modelId;
 #endif
         ModelUpdateReq();
+    }
+    else if (packetType == CRSF_FRAMETYPE_COMMAND
+        && extMessage->payload[0] == CRSF_COMMAND_SUBCMD_ELRS
+        && extMessage->payload[1] == CRSF_COMMAND_SUBCMD_LINK_CRYPTO_ACCEPT
+        && extMessage->payload[2] == LINK_CRYPTO_VERSION)
+    {
+        if (LinkCryptoHandleAccept(&g_linkCryptoTx, &extMessage->payload[3]))
+        {
+            SetSyncSpam();
+        }
     }
     else if (packetType == CRSF_FRAMETYPE_DEVICE_PING
         || packetType == CRSF_FRAMETYPE_PARAMETER_READ

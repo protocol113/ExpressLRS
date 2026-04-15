@@ -75,6 +75,12 @@ void saveOptions(Stream &stream, bool customised)
         doc["wifi-ssid"] = firmwareOptions.home_wifi_ssid;
         doc["wifi-password"] = firmwareOptions.home_wifi_password;
     }
+    if (firmwareOptions.hasLinkCryptoKey)
+    {
+        JsonArray bindingHash = doc["binding-hash"].to<JsonArray>();
+        copyArray(firmwareOptions.link_crypto_key, sizeof(firmwareOptions.link_crypto_key), bindingHash);
+    }
+    doc["link-crypto-enabled"] = firmwareOptions.link_crypto_enabled;
     doc["runtime-freq-enabled"] = firmwareOptions.runtime_freq_enabled;
     doc["runtime-freq-preset"] = firmwareOptions.runtime_freq_preset;
     doc["runtime-freq-start"] = firmwareOptions.runtime_freq_start;
@@ -193,6 +199,17 @@ static void options_LoadFromFlashOrFile(EspFlashStream &strmFlash)
     firmwareOptions.wifi_auto_on_interval = wifiInterval == -1 ? -1 : wifiInterval * 1000;
     strlcpy(firmwareOptions.home_wifi_ssid, doc["wifi-ssid"] | "", sizeof(firmwareOptions.home_wifi_ssid));
     strlcpy(firmwareOptions.home_wifi_password, doc["wifi-password"] | "", sizeof(firmwareOptions.home_wifi_password));
+    if (doc["binding-hash"].is<JsonArray>())
+    {
+        copyArray(doc["binding-hash"], firmwareOptions.link_crypto_key, sizeof(firmwareOptions.link_crypto_key));
+        firmwareOptions.hasLinkCryptoKey = true;
+    }
+    else
+    {
+        memset(firmwareOptions.link_crypto_key, 0, sizeof(firmwareOptions.link_crypto_key));
+        firmwareOptions.hasLinkCryptoKey = false;
+    }
+    firmwareOptions.link_crypto_enabled = doc["link-crypto-enabled"] | firmwareOptions.hasLinkCryptoKey;
     firmwareOptions.runtime_freq_enabled = doc["runtime-freq-enabled"] | false;
     firmwareOptions.runtime_freq_preset = doc["runtime-freq-preset"] | 0;
     firmwareOptions.runtime_freq_start = doc["runtime-freq-start"] | 903500000U;
