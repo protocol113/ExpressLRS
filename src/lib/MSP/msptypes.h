@@ -45,6 +45,12 @@ enum class MSP_ELRS_RXTX_CONFIG_SUBCMD : uint8_t {
     UID             = 0x00,
     BIND_PHRASE     = 0x01,
     MODEL_ID        = 0x0A,
+
+    // runtime-freq-v2: negotiated runtime frequency switching.
+    // See lib/FHSS/FreqStageMsg.h for wire format.
+    FREQ_STAGE      = 0x10,   // TX -> RX: stage a new active config at epoch
+    FREQ_STAGE_ACK  = 0x11,   // RX -> TX: echo epoch + status
+    FREQ_ABORT      = 0x12,   // either direction: cancel a staged config
 };
 
 // ELRS backpack protocol opcodes
