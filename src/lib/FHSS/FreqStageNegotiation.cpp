@@ -1,6 +1,13 @@
 #include "FreqStageNegotiation.h"
 #include <string.h>
 
+#if defined(RUNTIME_FREQ_DEBUG) && !defined(UNIT_TEST)
+#include "logging.h"
+#define FREQ_DBG(fmt, ...) DBGLN("[FREQ] " fmt, ##__VA_ARGS__)
+#else
+#define FREQ_DBG(...) do {} while (0)
+#endif
+
 // --- Lead-time ------------------------------------------------------------
 
 uint32_t FreqStageComputeLeadNonces(uint8_t tlmDenom)
@@ -58,7 +65,7 @@ FreqStageAckStatus FreqStageRxHandleStage(const uint8_t *payload,
     FreqStageMsg msg{};
     FreqStageAckStatus status = decodeFreqStageStatus(payload, payloadLen, &msg);
     if (outMsg != nullptr) *outMsg = msg;
-    if (status != FREQ_ACK_OK) return status;
+    if (status != FREQ_ACK_OK) { FREQ_DBG("rx stage decode failed status=%u", status); return status; }
 
     // Idempotent duplicate: same epoch already staged/swapped. Re-ACK, no
     // state-machine mutation. Protects against Stubborn retransmits and
@@ -101,6 +108,8 @@ FreqStageAckStatus FreqStageRxHandleStage(const uint8_t *payload,
 
     g_lastAcceptedEpoch  = msg.epoch_nonce;
     g_hasAcceptedAnEpoch = true;
+    FREQ_DBG("rx stage OK name=%.16s count=%u epoch=%u",
+             params.name, (unsigned)params.freq_count, (unsigned)msg.epoch_nonce);
     return FREQ_ACK_OK;
 }
 
@@ -133,6 +142,9 @@ bool FreqStageSendStage(const FHSSFreqConfig *cfg, uint32_t currentNonce, uint8_
     if (encodeFreqStage(&msg, buf, sizeof(buf)) != FREQ_STAGE_WIRE_LEN) return false;
 
     if (!txSendRxtxConfig((uint8_t)MSP_ELRS_RXTX_CONFIG_SUBCMD::FREQ_STAGE, buf, sizeof(buf))) return false;
+
+    FREQ_DBG("tx send stage name=%s nonce=%u epoch=%u tlm=%u",
+             cfg->params.name, (unsigned)currentNonce, (unsigned)msg.epoch_nonce, (unsigned)tlmDenom);
 
     // Record local state. TX uses requireAck=true — will only swap at
     // epoch if FHSSnotifyAckReceived(msg.epoch_nonce) is called first.

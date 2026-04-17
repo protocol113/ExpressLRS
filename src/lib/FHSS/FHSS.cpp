@@ -227,6 +227,12 @@ bool isUsingPrimaryFreqBand()
 
 // --- runtime-freq-v2 -------------------------------------------------------
 
+#if defined(RUNTIME_FREQ_DEBUG)
+#define FREQ_DBG(fmt, ...) DBGLN("[FREQ] " fmt, ##__VA_ARGS__)
+#else
+#define FREQ_DBG(...) do {} while (0)
+#endif
+
 static FHSSFreqConfig g_configPool[FHSS_SLOT_COUNT];
 
 // Shadow fhss_config_t so FHSSconfig can point at runtime-built data without
@@ -249,6 +255,16 @@ static FHSSRuntimeState      g_runtimeState     = FHSS_STATE_RENDEZVOUS;
 FHSSFreqConfig *FHSSgetPoolSlot(FHSSConfigSlot slot)
 {
     return (slot < FHSS_SLOT_COUNT) ? &g_configPool[slot] : nullptr;
+}
+
+const fhss_config_t *FHSSgetCompileTimeDomain(uint8_t index)
+{
+    return (index < FHSSgetCompileTimeDomainCount()) ? &domains[index] : nullptr;
+}
+
+uint8_t FHSSgetCompileTimeDomainCount(void)
+{
+    return (uint8_t)(sizeof(domains) / sizeof(domains[0]));
 }
 
 const FHSSFreqConfig *FHSSgetRendezvousConfig(void) { return g_rendezvousConfig; }
@@ -326,6 +342,7 @@ bool FHSSstageConfig(const FHSSFreqConfig *cfg, uint32_t epochNonce, bool requir
     g_stageRequiresAck = requireAck;
     g_ackReceived      = false;  // fresh stage — any prior ack doesn't count
     g_runtimeState     = FHSS_STATE_STAGED;
+    FREQ_DBG("stage name=%s epoch=%u requireAck=%d", cfg->params.name, (unsigned)epochNonce, (int)requireAck);
     return true;
 }
 
@@ -336,6 +353,7 @@ void FHSSnotifyAckReceived(uint32_t epochNonce)
     if (!g_switchArmed) return;
     if (epochNonce != g_switchEpochNonce) return;
     g_ackReceived = true;
+    FREQ_DBG("ack received for epoch=%u -> gate open", (unsigned)epochNonce);
 }
 
 void FHSSactivateIfEpochReached(uint32_t currentNonce)
@@ -350,6 +368,7 @@ void FHSSactivateIfEpochReached(uint32_t currentNonce)
     // receiving STAGE IS the proof.
     if (g_stageRequiresAck && !g_ackReceived)
     {
+        FREQ_DBG("ack-gate blocked swap at epoch=%u (no ack)", (unsigned)g_switchEpochNonce);
         g_stagedConfig  = nullptr;
         g_switchArmed   = false;
         g_runtimeState  = (g_activeConfig == g_rendezvousConfig)
@@ -357,6 +376,7 @@ void FHSSactivateIfEpochReached(uint32_t currentNonce)
         return;
     }
 
+    FREQ_DBG("swap active<-staged name=%s at nonce=%u", g_stagedConfig->params.name, (unsigned)currentNonce);
     g_activeConfig  = g_stagedConfig;
     g_stagedConfig  = nullptr;
     g_switchArmed   = false;
@@ -369,6 +389,7 @@ void FHSSactivateIfEpochReached(uint32_t currentNonce)
 
 void FHSSrevertToRendezvous(void)
 {
+    FREQ_DBG("revert -> rendezvous (from state=%u)", (unsigned)g_runtimeState);
     g_activeConfig  = g_rendezvousConfig;
     g_stagedConfig  = nullptr;
     g_switchArmed   = false;
@@ -383,6 +404,7 @@ void FHSSnotifyValidPacket(void)
 {
     if (g_runtimeState == FHSS_STATE_SWITCHING)
     {
+        FREQ_DBG("switching -> ACTIVE (first valid packet)");
         g_runtimeState = FHSS_STATE_ACTIVE;
     }
     g_msSinceSwap = 0;  // feed the watchdog
@@ -398,6 +420,7 @@ void FHSSwatchdogTick(uint32_t deltaMs)
     g_msSinceSwap += deltaMs;
     if (g_msSinceSwap >= FHSS_WATCHDOG_MS)
     {
+        FREQ_DBG("watchdog fired after %ums -> revert", (unsigned)g_msSinceSwap);
         FHSSrevertToRendezvous();
     }
 }

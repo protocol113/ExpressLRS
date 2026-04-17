@@ -107,6 +107,12 @@ bool FHSSbuildConfig(FHSSFreqConfig *dst, const FHSSFreqParams *params, uint32_t
 // rendezvous / active wiring lands in PR 2.
 FHSSFreqConfig *FHSSgetPoolSlot(FHSSConfigSlot slot);
 
+// Expose the compile-time domain table so the Lua "Freq Config" preset
+// selector (PR 5) can iterate available presets without the Lua layer
+// reaching into FHSS internals.
+const fhss_config_t *FHSSgetCompileTimeDomain(uint8_t index);
+uint8_t              FHSSgetCompileTimeDomainCount(void);
+
 // Negotiation state observable from outside (tests, Lua status line, logs).
 enum FHSSRuntimeState : uint8_t {
     FHSS_STATE_RENDEZVOUS = 0,   // active == rendezvous, nothing pending

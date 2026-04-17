@@ -4,9 +4,11 @@
 #include "CRSFHandset.h"
 #include "CRSFRouter.h"
 #include "FHSS.h"
+#include "FreqStageNegotiation.h"
 #include "OTA.h"
 #include "POWERMGNT.h"
 #include "SX12xxDriverCommon.h"
+#include "common.h"
 #include "config.h"
 #include "helpers.h"
 #include "deferred.h"
@@ -180,6 +182,49 @@ static stringParameter luaELRSversion = {
     {version_domain, CRSF_INFO},
     commit
 };
+
+//---------------------------- Freq Config (runtime-freq-v2) ------
+#if defined(RADIO_LR1121)
+// LR1121-only for the first cut. SX127X would also work but needs the
+// Hz ↔ reg-val conversion in FreqStageBuildMsgFromConfig (tracked for a
+// follow-up). SX128X is 2.4-only and has a single domain, so runtime
+// switching there is meaningless.
+
+// Built-in preset names. Must match the order of FHSS.cpp `domains[]`.
+#define STR_FREQ_PRESETS "AU915;FCC915;EU868;IN866;AU433;EU433;US433;US433W"
+
+static folderParameter luaFreqFolder = {
+    {"Freq Config", CRSF_FOLDER}
+};
+
+static selectionParameter luaFreqPreset = {
+    {"Preset", CRSF_TEXT_SELECTION},
+    0, // updated to match the compile-time domain at registration
+    STR_FREQ_PRESETS,
+    STR_EMPTYSPACE
+};
+
+static commandParameter luaFreqApply = {
+    {"Apply", CRSF_COMMAND},
+    lcsIdle,
+    STR_EMPTYSPACE
+};
+
+static commandParameter luaFreqRevert = {
+    {"Revert", CRSF_COMMAND},
+    lcsIdle,
+    STR_EMPTYSPACE
+};
+
+// Backing storage for the runtime status display. Refreshed by
+// updateParameters() on every Lua poll so the user sees state
+// transitions live ("RDV: FCC915" → "STAGED" → "ACTIVE: EU868").
+static char luaFreqStatusBuf[28];
+static stringParameter luaFreqStatus = {
+    {"Status", CRSF_INFO},
+    luaFreqStatusBuf
+};
+#endif
 
 //---------------------------- WiFi -----------------------------
 static folderParameter luaWiFiFolder = {
@@ -978,6 +1023,85 @@ void TXModuleEndpoint::registerParameters()
     registerParameter(&luaBind, sendCallback);
   }
 
+#if defined(RADIO_LR1121)
+  // runtime-freq-v2: Freq Config folder. Preset selection is a pure
+  // "remember-what-the-user-picked" field (no OTA until Apply). Apply
+  // builds a FHSSFreqConfig from the selected preset, queues STAGE over
+  // the Stubborn uplink, and arms the TX-side ACK gate. Revert cancels
+  // any pending stage and falls back to the rendezvous config.
+  registerParameter(&luaFreqFolder);
+  registerParameter(&luaFreqPreset, nullptr, luaFreqFolder.common.id);
+
+  auto freqApplyCallback = [this](propertiesCommon *item, uint8_t arg) {
+    commandParameter *cmd = (commandParameter *)item;
+    static uint32_t lastLcsPoll;
+    if (arg < lcsCancel)
+    {
+      lastLcsPoll = millis();
+      if (connectionState != connected)
+      {
+        sendCommandResponse(cmd, lcsIdle, "No link");
+        return;
+      }
+      uint8_t idx = luaFreqPreset.value;
+      const fhss_config_t *src = FHSSgetCompileTimeDomain(idx);
+      if (src == nullptr)
+      {
+        sendCommandResponse(cmd, lcsIdle, "Bad preset");
+        return;
+      }
+
+      FHSSFreqConfig *staged = FHSSgetPoolSlot(FHSS_SLOT_STAGED);
+      FHSSFreqParams params{};
+      params.freq_start   = src->freq_start;   // LR1121: reg-val == Hz
+      params.freq_stop    = src->freq_stop;
+      params.freq_count   = (uint8_t)src->freq_count;
+      params.sync_channel = (uint8_t)(src->freq_count / 2);
+      size_t n = 0;
+      while (n < FHSS_FREQ_NAME_MAXLEN - 1 && src->domain[n]) { params.name[n] = src->domain[n]; n++; }
+      params.name[n] = '\0';
+
+      if (!FHSSbuildConfig(staged, &params, OtaGetUidSeed()))
+      {
+        sendCommandResponse(cmd, lcsIdle, "Build fail");
+        return;
+      }
+      if (!FreqStageSendStage(staged, OtaNonce, ExpressLRS_currTlmDenom))
+      {
+        sendCommandResponse(cmd, lcsIdle, "Send fail");
+        return;
+      }
+      sendCommandResponse(cmd, lcsExecuting, "Staging...");
+    }
+    else if (arg == lcsCancel || (millis() - lastLcsPoll) > 2000)
+    {
+      sendCommandResponse(cmd, lcsIdle, STR_EMPTYSPACE);
+    }
+  };
+
+  auto freqRevertCallback = [this](propertiesCommon *item, uint8_t arg) {
+    commandParameter *cmd = (commandParameter *)item;
+    if (arg < lcsCancel)
+    {
+      FreqStageSendAbort();
+      FHSSrevertToRendezvous();
+      sendCommandResponse(cmd, lcsExecuting, "Reverted");
+    }
+    else
+    {
+      sendCommandResponse(cmd, lcsIdle, STR_EMPTYSPACE);
+    }
+  };
+
+  registerParameter(&luaFreqApply,  freqApplyCallback,  luaFreqFolder.common.id);
+  registerParameter(&luaFreqRevert, freqRevertCallback, luaFreqFolder.common.id);
+  registerParameter(&luaFreqStatus, nullptr,            luaFreqFolder.common.id);
+
+  // Seed the preset selector to the compile-time domain so the
+  // displayed default matches what the radio is actually on.
+  luaFreqPreset.value = firmwareOptions.domain;
+#endif
+
   registerParameter(&luaInfo);
   registerParameter(&luaELRSversion);
 }
@@ -1043,4 +1167,22 @@ void TXModuleEndpoint::updateParameters()
     setStringValue(&luaBackpackVersion, backpackVersion);
   }
   updateFolderNames();
+
+#if defined(RADIO_LR1121)
+  // runtime-freq-v2: refresh the Freq Config status line on every Lua
+  // poll so the user sees RDV → STAGED → SWITCHING → ACTIVE transitions
+  // live. Buffer is 28 bytes; keep output short ("ACTIVE: FCC915").
+  const FHSSFreqConfig *act = FHSSgetActiveConfig();
+  const char *stateStr = "?";
+  switch (FHSSgetRuntimeState())
+  {
+    case FHSS_STATE_RENDEZVOUS: stateStr = "RDV";    break;
+    case FHSS_STATE_STAGED:     stateStr = "STGD";   break;
+    case FHSS_STATE_SWITCHING:  stateStr = "SWTCH";  break;
+    case FHSS_STATE_ACTIVE:     stateStr = "ACTIVE"; break;
+    case FHSS_STATE_FALLBACK:   stateStr = "FALLBK"; break;
+  }
+  const char *name = (act != nullptr) ? act->params.name : "-";
+  snprintf(luaFreqStatusBuf, sizeof(luaFreqStatusBuf), "%s: %s", stateStr, name);
+#endif
 }
