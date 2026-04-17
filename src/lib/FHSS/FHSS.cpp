@@ -218,3 +218,58 @@ bool isUsingPrimaryFreqBand()
 {
     return FHSSusePrimaryFreqBand;
 }
+
+// --- runtime-freq-v2 -------------------------------------------------------
+
+static FHSSFreqConfig g_configPool[FHSS_SLOT_COUNT];
+
+FHSSFreqConfig *FHSSgetPoolSlot(FHSSConfigSlot slot)
+{
+    return (slot < FHSS_SLOT_COUNT) ? &g_configPool[slot] : nullptr;
+}
+
+// Pure variant of the sequence-building loop used by FHSSrandomiseFHSSsequenceBuild.
+// Does not touch FHSSptr or the band_count globals — operates only on the output
+// buffer plus the shared RNG.
+static void buildSequenceInto(uint32_t seed, uint8_t freqCount, uint8_t syncChannel, uint8_t *sequence)
+{
+    const uint16_t sequenceLen = (FHSS_SEQUENCE_LEN / freqCount) * freqCount;
+    rngSeed(seed);
+
+    for (uint16_t i = 0; i < sequenceLen; i++)
+    {
+        if (i % freqCount == 0) {
+            sequence[i] = syncChannel;
+        } else if (i % freqCount == syncChannel) {
+            sequence[i] = 0;
+        } else {
+            sequence[i] = i % freqCount;
+        }
+    }
+
+    for (uint16_t i = 0; i < sequenceLen; i++)
+    {
+        if (i % freqCount != 0)
+        {
+            uint8_t offset = (i / freqCount) * freqCount;
+            uint8_t rand = rngN(freqCount - 1) + 1;
+            uint8_t temp = sequence[i];
+            sequence[i] = sequence[offset + rand];
+            sequence[offset + rand] = temp;
+        }
+    }
+}
+
+bool FHSSbuildConfig(FHSSFreqConfig *dst, const FHSSFreqParams *params, uint32_t seed)
+{
+    if (dst == nullptr || params == nullptr) return false;
+    if (params->freq_count < 2) return false;
+    if (params->freq_start >= params->freq_stop) return false;
+    if (params->sync_channel >= params->freq_count) return false;
+
+    dst->params = *params;
+    dst->freq_spread = (params->freq_stop - params->freq_start) * FREQ_SPREAD_SCALE / (params->freq_count - 1);
+    dst->band_count = (FHSS_SEQUENCE_LEN / params->freq_count) * params->freq_count;
+    buildSequenceInto(seed, params->freq_count, params->sync_channel, dst->sequence);
+    return true;
+}

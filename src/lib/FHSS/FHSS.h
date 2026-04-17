@@ -60,6 +60,51 @@ void FHSSrandomiseFHSSsequenceBuild(uint32_t seed, uint32_t freqCount, uint_fast
 // add domain info for Lua
 void addDomainInfo(char *version_domain, uint8_t maxlen);
 
+// --- runtime-freq-v2 additions ---------------------------------------------
+
+#define FHSS_FREQ_NAME_MAXLEN 16
+
+// Slot indices into the runtime FHSS config pool. Rendezvous is the compile-time
+// domain established at boot; Active is what the getters read (== Rendezvous
+// until the negotiation path switches it); Staged is written during negotiation.
+enum FHSSConfigSlot : uint8_t {
+    FHSS_SLOT_RENDEZVOUS = 0,
+    FHSS_SLOT_ACTIVE     = 1,
+    FHSS_SLOT_STAGED     = 2,
+    FHSS_SLOT_COUNT      = 3,
+};
+
+// Inputs to FHSSbuildConfig. Frequencies are in register-value units (already
+// passed through FREQ_HZ_TO_REG_VAL by the caller); Hz→reg conversion happens
+// at boundaries (wire protocol, JSON loader), not inside this struct.
+struct FHSSFreqParams {
+    uint32_t freq_start;
+    uint32_t freq_stop;
+    uint8_t  freq_count;    // 2..FHSS_SEQUENCE_LEN; 255 is the hard upper bound
+    uint8_t  sync_channel;  // < freq_count
+    char     name[FHSS_FREQ_NAME_MAXLEN];
+};
+
+// A fully-built runtime FHSS config. Once built, treat as immutable — the
+// pointer-swap activation path assumes the content doesn't change under it.
+struct FHSSFreqConfig {
+    FHSSFreqParams params;
+    uint32_t       freq_spread;   // (stop-start) * FREQ_SPREAD_SCALE / (count-1)
+    uint16_t       band_count;    // (FHSS_SEQUENCE_LEN / count) * count
+    uint8_t        sequence[FHSS_SEQUENCE_LEN];
+};
+
+// Build an FHSSFreqConfig from params + seed into dst.
+// Pure wrt dst: deterministic, same inputs → same output.
+// Caveat: shares the random.h RNG state (rngSeed), so not re-entrant across
+// threads/ISRs. That matches every other FHSS builder in this codebase.
+// Returns false on invalid params (count<2, start>=stop, sync>=count, null ptr).
+bool FHSSbuildConfig(FHSSFreqConfig *dst, const FHSSFreqParams *params, uint32_t seed);
+
+// Access to the runtime config pool. PR 1 exposes these for tests; the
+// rendezvous / active wiring lands in PR 2.
+FHSSFreqConfig *FHSSgetPoolSlot(FHSSConfigSlot slot);
+
 static inline uint32_t FHSSgetMinimumFreq(void)
 {
     return FHSSconfig->freq_start;
