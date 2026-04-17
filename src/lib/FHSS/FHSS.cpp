@@ -88,6 +88,8 @@ constexpr uint8_t VERSION_DOMAIN_MAXLEN = 26 + 1;   // max. number of characters
 char version_domain[VERSION_DOMAIN_MAXLEN] {};
 
 
+static void initRendezvousFromLegacy(uint32_t seed);  // v2; defined below
+
 void FHSSrandomiseFHSSsequence(const uint32_t seed)
 {
     FHSSconfig = &domains[firmwareOptions.domain];
@@ -116,6 +118,10 @@ void FHSSrandomiseFHSSsequence(const uint32_t seed)
 
     // add frequency and regulatory domain to the string used by the Lua script
     addDomainInfo(version_domain, VERSION_DOMAIN_MAXLEN);
+
+    // v2: snapshot the compile-time domain as the rendezvous config so future
+    // FHSSstageConfig / FHSSrevertToRendezvous calls have a known home.
+    initRendezvousFromLegacy(seed);
 }
 
 /**
@@ -223,9 +229,160 @@ bool isUsingPrimaryFreqBand()
 
 static FHSSFreqConfig g_configPool[FHSS_SLOT_COUNT];
 
+// Shadow fhss_config_t so FHSSconfig can point at runtime-built data without
+// changing the type of the legacy extern (older getters and external readers
+// still dereference it). Kept in sync by mirrorLegacyGlobalsFromActive().
+static fhss_config_t g_legacyShadow;
+static char          g_legacyShadowName[FHSS_FREQ_NAME_MAXLEN];
+
+static const FHSSFreqConfig *g_rendezvousConfig = nullptr;
+static const FHSSFreqConfig *g_activeConfig     = nullptr;
+static const FHSSFreqConfig *g_stagedConfig     = nullptr;
+static uint32_t              g_switchEpochNonce = 0;
+static bool                  g_switchArmed      = false;
+static uint32_t              g_msSinceSwap      = 0;
+static bool                  g_watchdogArmed    = false;
+static FHSSRuntimeState      g_runtimeState     = FHSS_STATE_RENDEZVOUS;
+
 FHSSFreqConfig *FHSSgetPoolSlot(FHSSConfigSlot slot)
 {
     return (slot < FHSS_SLOT_COUNT) ? &g_configPool[slot] : nullptr;
+}
+
+const FHSSFreqConfig *FHSSgetRendezvousConfig(void) { return g_rendezvousConfig; }
+const FHSSFreqConfig *FHSSgetActiveConfig(void)     { return g_activeConfig; }
+const FHSSFreqConfig *FHSSgetStagedConfig(void)     { return g_stagedConfig; }
+FHSSRuntimeState      FHSSgetRuntimeState(void)     { return g_runtimeState; }
+
+// Mirror the active config into the legacy globals that the inline getters
+// and external consumers still read. Called at boot and on every swap.
+static void mirrorLegacyGlobalsFromActive(void)
+{
+    if (g_activeConfig == nullptr) return;
+
+    for (uint8_t i = 0; i < FHSS_FREQ_NAME_MAXLEN; i++)
+    {
+        g_legacyShadowName[i] = g_activeConfig->params.name[i];
+    }
+    g_legacyShadow.domain      = g_legacyShadowName;
+    g_legacyShadow.freq_start  = g_activeConfig->params.freq_start;
+    g_legacyShadow.freq_stop   = g_activeConfig->params.freq_stop;
+    g_legacyShadow.freq_count  = g_activeConfig->params.freq_count;
+    // freq_center isn't carried by FHSSFreqConfig (not needed by the builder);
+    // approximate as the midpoint so callers that read it (e.g. subGHz
+    // detection in tx_main) continue to get a sensible value.
+    g_legacyShadow.freq_center = (g_activeConfig->params.freq_start +
+                                  g_activeConfig->params.freq_stop) / 2;
+
+    FHSSconfig       = &g_legacyShadow;
+    freq_spread      = g_activeConfig->freq_spread;
+    sync_channel     = g_activeConfig->params.sync_channel;
+    primaryBandCount = g_activeConfig->band_count;
+    memcpy(FHSSsequence, g_activeConfig->sequence, FHSS_SEQUENCE_LEN);
+    FHSSptr = 0;
+}
+
+// Snapshot the currently-active compile-time domain into the rendezvous slot.
+// Must be called after the existing FHSSrandomiseFHSSsequence body has set
+// FHSSconfig / freq_spread / sync_channel / FHSSsequence.
+static void initRendezvousFromLegacy(uint32_t seed)
+{
+    FHSSFreqConfig *rdv = &g_configPool[FHSS_SLOT_RENDEZVOUS];
+    FHSSFreqParams p{};
+    p.freq_start   = FHSSconfig->freq_start;
+    p.freq_stop    = FHSSconfig->freq_stop;
+    p.freq_count   = (uint8_t)FHSSconfig->freq_count;
+    p.sync_channel = (uint8_t)sync_channel;
+    const char *name = FHSSconfig->domain ? FHSSconfig->domain : "";
+    uint8_t i = 0;
+    for (; i < FHSS_FREQ_NAME_MAXLEN - 1 && name[i] != '\0'; i++)
+    {
+        p.name[i] = name[i];
+    }
+    p.name[i] = '\0';
+
+    FHSSbuildConfig(rdv, &p, seed);
+
+    g_rendezvousConfig = rdv;
+    g_activeConfig     = rdv;
+    g_stagedConfig     = nullptr;
+    g_switchArmed      = false;
+    g_watchdogArmed    = false;
+    g_runtimeState     = FHSS_STATE_RENDEZVOUS;
+    // Legacy globals were populated by the existing FHSSrandomiseFHSSsequence
+    // body; no need to mirror here — mirrorLegacyGlobalsFromActive() runs on
+    // swap. Boot state is already consistent.
+}
+
+bool FHSSstageConfig(const FHSSFreqConfig *cfg, uint32_t epochNonce)
+{
+    if (cfg == nullptr) return false;
+    if (cfg->band_count == 0) return false;
+    g_stagedConfig     = cfg;
+    g_switchEpochNonce = epochNonce;
+    g_switchArmed      = true;
+    g_runtimeState     = FHSS_STATE_STAGED;
+    return true;
+}
+
+void FHSSactivateIfEpochReached(uint32_t currentNonce)
+{
+    if (!g_switchArmed || g_stagedConfig == nullptr) return;
+    // Monotonic 32-bit compare; OtaNonce won't wrap in any realistic session.
+    if (currentNonce < g_switchEpochNonce) return;
+
+    g_activeConfig  = g_stagedConfig;
+    g_stagedConfig  = nullptr;
+    g_switchArmed   = false;
+    g_msSinceSwap   = 0;
+    g_watchdogArmed = (g_activeConfig != g_rendezvousConfig);
+    g_runtimeState  = FHSS_STATE_SWITCHING;
+    mirrorLegacyGlobalsFromActive();
+}
+
+void FHSSrevertToRendezvous(void)
+{
+    g_activeConfig  = g_rendezvousConfig;
+    g_stagedConfig  = nullptr;
+    g_switchArmed   = false;
+    g_watchdogArmed = false;
+    g_msSinceSwap   = 0;
+    if (g_rendezvousConfig != nullptr) mirrorLegacyGlobalsFromActive();
+    g_runtimeState  = FHSS_STATE_FALLBACK;
+}
+
+void FHSSnotifyValidPacket(void)
+{
+    if (g_runtimeState == FHSS_STATE_SWITCHING)
+    {
+        g_runtimeState = FHSS_STATE_ACTIVE;
+    }
+    g_msSinceSwap = 0;  // feed the watchdog
+}
+
+void FHSSwatchdogTick(uint32_t deltaMs)
+{
+    if (!g_watchdogArmed) return;
+    // Only SWITCHING arms a real fallback — once ACTIVE, the switch is
+    // confirmed and the link owns the recovery path.
+    if (g_runtimeState != FHSS_STATE_SWITCHING) { g_watchdogArmed = false; return; }
+
+    g_msSinceSwap += deltaMs;
+    if (g_msSinceSwap >= FHSS_WATCHDOG_MS)
+    {
+        FHSSrevertToRendezvous();
+    }
+}
+
+void FHSSabortStagedConfig(void)
+{
+    g_stagedConfig = nullptr;
+    g_switchArmed  = false;
+    if (g_runtimeState == FHSS_STATE_STAGED)
+    {
+        g_runtimeState = (g_activeConfig == g_rendezvousConfig)
+                         ? FHSS_STATE_RENDEZVOUS : FHSS_STATE_ACTIVE;
+    }
 }
 
 // Pure variant of the sequence-building loop used by FHSSrandomiseFHSSsequenceBuild.

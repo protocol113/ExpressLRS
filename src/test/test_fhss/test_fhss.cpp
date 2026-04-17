@@ -190,6 +190,173 @@ void test_FHSSbuildConfig_pool_slots(void)
     TEST_ASSERT_TRUE(differs);
 }
 
+// --- runtime-freq-v2: negotiation state machine tests ---------------------
+
+static void bootRendezvous()
+{
+    // FHSSrandomiseFHSSsequence initializes the rendezvous config from the
+    // compile-time domain. Everything downstream (stage/swap/revert) depends
+    // on having a valid rendezvous, so each state-machine test re-boots.
+    FHSSrandomiseFHSSsequence(0x01020304L);
+    FHSSrevertToRendezvous();
+    // FHSSrevertToRendezvous leaves state in FALLBACK; re-seed to RENDEZVOUS
+    // by nudging through a no-op activation cycle is over-engineered; tests
+    // just assert initial state explicitly where it matters.
+}
+
+void test_v2_boot_active_equals_rendezvous(void)
+{
+    FHSSrandomiseFHSSsequence(0x01020304L);
+    TEST_ASSERT_NOT_NULL(FHSSgetRendezvousConfig());
+    TEST_ASSERT_EQUAL_PTR(FHSSgetRendezvousConfig(), FHSSgetActiveConfig());
+    TEST_ASSERT_NULL(FHSSgetStagedConfig());
+    TEST_ASSERT_EQUAL(FHSS_STATE_RENDEZVOUS, FHSSgetRuntimeState());
+}
+
+void test_v2_stage_sets_staged(void)
+{
+    bootRendezvous();
+    FHSSFreqConfig *stg = FHSSgetPoolSlot(FHSS_SLOT_STAGED);
+    FHSSFreqParams p = sampleParams();
+    TEST_ASSERT_TRUE(FHSSbuildConfig(stg, &p, 0xBEEF));
+
+    TEST_ASSERT_TRUE(FHSSstageConfig(stg, 1000));
+    TEST_ASSERT_EQUAL_PTR(stg, FHSSgetStagedConfig());
+    TEST_ASSERT_EQUAL(FHSS_STATE_STAGED, FHSSgetRuntimeState());
+    // Active hasn't moved yet
+    TEST_ASSERT_EQUAL_PTR(FHSSgetRendezvousConfig(), FHSSgetActiveConfig());
+}
+
+void test_v2_activate_before_epoch_is_noop(void)
+{
+    bootRendezvous();
+    FHSSFreqConfig *stg = FHSSgetPoolSlot(FHSS_SLOT_STAGED);
+    FHSSFreqParams p = sampleParams();
+    FHSSbuildConfig(stg, &p, 1);
+    FHSSstageConfig(stg, 1000);
+
+    FHSSactivateIfEpochReached(999);
+    TEST_ASSERT_EQUAL(FHSS_STATE_STAGED, FHSSgetRuntimeState());
+    TEST_ASSERT_EQUAL_PTR(FHSSgetRendezvousConfig(), FHSSgetActiveConfig());
+    TEST_ASSERT_NOT_NULL(FHSSgetStagedConfig());
+}
+
+void test_v2_activate_at_or_past_epoch_swaps(void)
+{
+    bootRendezvous();
+    FHSSFreqConfig *stg = FHSSgetPoolSlot(FHSS_SLOT_STAGED);
+    FHSSFreqParams p = sampleParams();
+    FHSSbuildConfig(stg, &p, 1);
+    FHSSstageConfig(stg, 1000);
+
+    FHSSactivateIfEpochReached(1000);
+    TEST_ASSERT_EQUAL(FHSS_STATE_SWITCHING, FHSSgetRuntimeState());
+    TEST_ASSERT_EQUAL_PTR(stg, FHSSgetActiveConfig());
+    TEST_ASSERT_NULL(FHSSgetStagedConfig());
+    // Legacy globals must mirror the new active
+    TEST_ASSERT_EQUAL_UINT32(p.freq_start, FHSSconfig->freq_start);
+    TEST_ASSERT_EQUAL_UINT32(p.freq_stop, FHSSconfig->freq_stop);
+    TEST_ASSERT_EQUAL_UINT32(p.freq_count, FHSSconfig->freq_count);
+    TEST_ASSERT_EQUAL_UINT8(p.sync_channel, sync_channel);
+}
+
+void test_v2_notify_confirms_switch(void)
+{
+    bootRendezvous();
+    FHSSFreqConfig *stg = FHSSgetPoolSlot(FHSS_SLOT_STAGED);
+    FHSSFreqParams p = sampleParams();
+    FHSSbuildConfig(stg, &p, 1);
+    FHSSstageConfig(stg, 1000);
+    FHSSactivateIfEpochReached(1000);
+    TEST_ASSERT_EQUAL(FHSS_STATE_SWITCHING, FHSSgetRuntimeState());
+
+    FHSSnotifyValidPacket();
+    TEST_ASSERT_EQUAL(FHSS_STATE_ACTIVE, FHSSgetRuntimeState());
+}
+
+void test_v2_watchdog_reverts_without_valid_packets(void)
+{
+    bootRendezvous();
+    FHSSFreqConfig *stg = FHSSgetPoolSlot(FHSS_SLOT_STAGED);
+    FHSSFreqParams p = sampleParams();
+    FHSSbuildConfig(stg, &p, 1);
+    FHSSstageConfig(stg, 1000);
+    FHSSactivateIfEpochReached(1000);
+    TEST_ASSERT_EQUAL_PTR(stg, FHSSgetActiveConfig());
+
+    // Just under threshold — no revert
+    FHSSwatchdogTick(FHSS_WATCHDOG_MS - 1);
+    TEST_ASSERT_EQUAL(FHSS_STATE_SWITCHING, FHSSgetRuntimeState());
+    TEST_ASSERT_EQUAL_PTR(stg, FHSSgetActiveConfig());
+
+    // Crossing threshold — revert
+    FHSSwatchdogTick(2);
+    TEST_ASSERT_EQUAL(FHSS_STATE_FALLBACK, FHSSgetRuntimeState());
+    TEST_ASSERT_EQUAL_PTR(FHSSgetRendezvousConfig(), FHSSgetActiveConfig());
+}
+
+void test_v2_notify_keeps_watchdog_fed(void)
+{
+    bootRendezvous();
+    FHSSFreqConfig *stg = FHSSgetPoolSlot(FHSS_SLOT_STAGED);
+    FHSSFreqParams p = sampleParams();
+    FHSSbuildConfig(stg, &p, 1);
+    FHSSstageConfig(stg, 1000);
+    FHSSactivateIfEpochReached(1000);
+    FHSSnotifyValidPacket();  // → ACTIVE, watchdog disarms
+
+    // Even a long tick past threshold doesn't revert an ACTIVE config
+    FHSSwatchdogTick(FHSS_WATCHDOG_MS * 10);
+    TEST_ASSERT_EQUAL(FHSS_STATE_ACTIVE, FHSSgetRuntimeState());
+    TEST_ASSERT_EQUAL_PTR(stg, FHSSgetActiveConfig());
+}
+
+void test_v2_revert_restores_rendezvous(void)
+{
+    bootRendezvous();
+    FHSSFreqConfig *stg = FHSSgetPoolSlot(FHSS_SLOT_STAGED);
+    FHSSFreqParams p = sampleParams();
+    FHSSbuildConfig(stg, &p, 1);
+    FHSSstageConfig(stg, 1000);
+    FHSSactivateIfEpochReached(1000);
+    FHSSnotifyValidPacket();
+    TEST_ASSERT_EQUAL(FHSS_STATE_ACTIVE, FHSSgetRuntimeState());
+
+    FHSSrevertToRendezvous();
+    TEST_ASSERT_EQUAL(FHSS_STATE_FALLBACK, FHSSgetRuntimeState());
+    TEST_ASSERT_EQUAL_PTR(FHSSgetRendezvousConfig(), FHSSgetActiveConfig());
+    TEST_ASSERT_NULL(FHSSgetStagedConfig());
+}
+
+void test_v2_abort_staged_clears_without_swap(void)
+{
+    bootRendezvous();
+    FHSSFreqConfig *stg = FHSSgetPoolSlot(FHSS_SLOT_STAGED);
+    FHSSFreqParams p = sampleParams();
+    FHSSbuildConfig(stg, &p, 1);
+    FHSSstageConfig(stg, 1000);
+    TEST_ASSERT_EQUAL(FHSS_STATE_STAGED, FHSSgetRuntimeState());
+
+    FHSSabortStagedConfig();
+    TEST_ASSERT_NULL(FHSSgetStagedConfig());
+    TEST_ASSERT_EQUAL_PTR(FHSSgetRendezvousConfig(), FHSSgetActiveConfig());
+    // Active was still rendezvous, so abort leaves us there
+    TEST_ASSERT_EQUAL(FHSS_STATE_RENDEZVOUS, FHSSgetRuntimeState());
+    // A late epoch arrival now should do nothing
+    FHSSactivateIfEpochReached(2000);
+    TEST_ASSERT_EQUAL_PTR(FHSSgetRendezvousConfig(), FHSSgetActiveConfig());
+}
+
+void test_v2_stage_rejects_invalid(void)
+{
+    bootRendezvous();
+    TEST_ASSERT_FALSE(FHSSstageConfig(nullptr, 1000));
+
+    FHSSFreqConfig empty{};
+    TEST_ASSERT_FALSE_MESSAGE(FHSSstageConfig(&empty, 1000),
+                              "zero-length sequence must fail");
+}
+
 // Unity setup/teardown
 void setUp() {}
 void tearDown() {}
@@ -207,6 +374,16 @@ int main(int argc, char **argv)
     RUN_TEST(test_FHSSbuildConfig_rejects_invalid);
     RUN_TEST(test_FHSSbuildConfig_sequence_wellformed);
     RUN_TEST(test_FHSSbuildConfig_pool_slots);
+    RUN_TEST(test_v2_boot_active_equals_rendezvous);
+    RUN_TEST(test_v2_stage_sets_staged);
+    RUN_TEST(test_v2_activate_before_epoch_is_noop);
+    RUN_TEST(test_v2_activate_at_or_past_epoch_swaps);
+    RUN_TEST(test_v2_notify_confirms_switch);
+    RUN_TEST(test_v2_watchdog_reverts_without_valid_packets);
+    RUN_TEST(test_v2_notify_keeps_watchdog_fed);
+    RUN_TEST(test_v2_revert_restores_rendezvous);
+    RUN_TEST(test_v2_abort_staged_clears_without_swap);
+    RUN_TEST(test_v2_stage_rejects_invalid);
     UNITY_END();
 
     return 0;

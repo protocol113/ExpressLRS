@@ -105,6 +105,54 @@ bool FHSSbuildConfig(FHSSFreqConfig *dst, const FHSSFreqParams *params, uint32_t
 // rendezvous / active wiring lands in PR 2.
 FHSSFreqConfig *FHSSgetPoolSlot(FHSSConfigSlot slot);
 
+// Negotiation state observable from outside (tests, Lua status line, logs).
+enum FHSSRuntimeState : uint8_t {
+    FHSS_STATE_RENDEZVOUS = 0,   // active == rendezvous, nothing pending
+    FHSS_STATE_STAGED     = 1,   // staged config held; waiting for epoch
+    FHSS_STATE_SWITCHING  = 2,   // pointer swapped; waiting for first valid packet
+    FHSS_STATE_ACTIVE     = 3,   // running on non-rendezvous config, link confirmed
+    FHSS_STATE_FALLBACK   = 4,   // watchdog fired; reverted to rendezvous
+};
+
+// Rendezvous / active / staged accessors. Rendezvous is set once at boot
+// from the compile-time domain; both TX and RX always start here.
+const FHSSFreqConfig *FHSSgetRendezvousConfig(void);
+const FHSSFreqConfig *FHSSgetActiveConfig(void);
+const FHSSFreqConfig *FHSSgetStagedConfig(void);
+FHSSRuntimeState      FHSSgetRuntimeState(void);
+
+// Stage a built config. The staged pointer must remain valid until the
+// epoch is reached (typically a slot inside the pool).
+//   epochNonce: future OtaNonce at which both sides swap. Must be > current.
+// Returns false if cfg is null or cfg has zero-length sequence.
+bool FHSSstageConfig(const FHSSFreqConfig *cfg, uint32_t epochNonce);
+
+// Call each packet with the current OtaNonce. If staged and currentNonce
+// has reached epoch, swaps activeConfig to the staged slot and arms the
+// fallback watchdog. No-op in all other states.
+void FHSSactivateIfEpochReached(uint32_t currentNonce);
+
+// Restore the rendezvous config immediately. Clears any staged config
+// and resets the watchdog. Safe to call from any state.
+void FHSSrevertToRendezvous(void);
+
+// Report that a valid packet was received (CRC-valid OTA). Confirms the
+// switch (SWITCHING → ACTIVE on the first call after swap) and feeds the
+// watchdog.
+void FHSSnotifyValidPacket(void);
+
+// Advance the watchdog by deltaMs. If a swap is armed and no valid packet
+// has been seen within FHSS_WATCHDOG_MS, auto-reverts to rendezvous.
+void FHSSwatchdogTick(uint32_t deltaMs);
+
+// Abort any staged config without swapping. Leaves activeConfig alone.
+void FHSSabortStagedConfig(void);
+
+// 1500 ms default — window for the first valid packet on the new config.
+#ifndef FHSS_WATCHDOG_MS
+#define FHSS_WATCHDOG_MS 1500
+#endif
+
 static inline uint32_t FHSSgetMinimumFreq(void)
 {
     return FHSSconfig->freq_start;
