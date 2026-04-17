@@ -65,33 +65,50 @@ def crc8_buf(buf: bytes) -> int:
     return crc
 
 class CrsfParser:
-    """Byte-stream parser that yields (frame_type, payload) tuples."""
+    """Byte-stream parser that yields (frame_type, payload) tuples. Also
+    collects non-CRSF bytes into an ASCII buffer so interleaved DBGLN text
+    from the firmware (which shares the same UART as CRSF telemetry when
+    DEBUG_LOG is enabled) can be recovered as lines via drain_text_lines()."""
     def __init__(self):
         self.buf = bytearray()
+        self.text_buf = bytearray()
+
+    def _stash_text(self, b: int):
+        # Keep printable ASCII + CR/LF; everything else is noise.
+        if b == 0x0A or b == 0x0D or (0x20 <= b <= 0x7E):
+            self.text_buf.append(b)
+
+    def drain_text_lines(self):
+        # Split on LF, return complete lines, keep partial in buffer.
+        while b'\n' in self.text_buf:
+            line, _, self.text_buf = self.text_buf.partition(b'\n')
+            txt = line.rstrip(b'\r').decode('ascii', errors='replace').strip()
+            if txt:
+                yield txt
+        # Cap buffer so a never-LF stream doesn't grow forever.
+        if len(self.text_buf) > 4096:
+            self.text_buf = self.text_buf[-1024:]
 
     def feed(self, data: bytes):
         self.buf.extend(data)
         while True:
-            # Resync to a known sync byte
+            # Resync: any non-sync byte might be interleaved debug text.
             while self.buf and self.buf[0] not in CRSF_SYNC_BYTES:
-                self.buf.pop(0)
+                self._stash_text(self.buf.pop(0))
             if len(self.buf) < 2:
                 return
             length = self.buf[1]
             if length < 2 or length > 62:
-                # invalid length field; drop this byte and resync
-                self.buf.pop(0)
+                self._stash_text(self.buf.pop(0))
                 continue
-            total = length + 2  # sync + length + payload/crc
+            total = length + 2
             if len(self.buf) < total:
                 return
             frame = bytes(self.buf[:total])
-            # CRC covers type+payload, not the sync+length prefix
             body = frame[2:-1]
             crc_expected = frame[-1]
             if crc8_buf(body) != crc_expected:
-                # bad frame; drop sync byte and try again
-                self.buf.pop(0)
+                self._stash_text(self.buf.pop(0))
                 continue
             ftype = frame[2]
             payload = frame[3:-1]
@@ -138,31 +155,64 @@ def format_status(s: dict) -> str:
 
 # --- Main ----------------------------------------------------------------
 
-def rx_debug_thread(port: str, logf):
-    """Tee DBR4 debug UART lines (looking for [FREQ] entries especially)."""
-    try:
-        s = serial.Serial(port, 420000, timeout=0.1)
-    except Exception as e:
-        print(f"[{ts()}] RX: could not open {port}: {e}", file=sys.stderr)
-        return
+def open_port_safely(port: str, baud: int) -> serial.Serial:
+    """Open a serial port without asserting DTR/RTS — on some CP2102 adapters
+    (e.g. our Nomad TX), those lines are wired to the ESP32 EN/GPIO0 pins, so
+    default pyserial behavior can inadvertently trigger a module reset or
+    bootloader entry just by opening the port. Set both low before open()."""
+    s = serial.Serial()
+    s.port = port
+    s.baudrate = baud
+    s.timeout = 0.1
+    s.dtr = False
+    s.rts = False
+    s.open()
+    # Belt-and-suspenders: re-assert low after open in case the OS flipped them.
+    s.dtr = False
+    s.rts = False
+    return s
+
+def rx_debug_thread(port_glob: str, logf):
+    """Tee DBR4 debug UART lines. Resilient to USB re-enumeration — if the
+    port disappears (e.g. DBR4 power-cycle, OSError 6), re-discovers the port
+    from the glob pattern and retries indefinitely. Accepts a full path or a
+    glob prefix (e.g. /dev/cu.usbserial-0001 or /dev/cu.usbserial*)."""
+    import glob as _glob
     buf = bytearray()
     while True:
-        n = s.in_waiting
-        if n:
-            buf.extend(s.read(n))
-        # Split on newlines; keep partial for next round
-        while b'\n' in buf:
-            line, _, buf = buf.partition(b'\n')
-            txt = line.rstrip(b'\r').decode('utf-8', errors='replace').strip()
-            if not txt:
+        s = None
+        try:
+            candidates = _glob.glob(port_glob) if '*' in port_glob else [port_glob]
+            candidates = [p for p in candidates if p != getattr(rx_debug_thread, '_taken_tx', None)]
+            if not candidates:
+                time.sleep(1.0)
                 continue
-            marker = "[RX FREQ]" if '[FREQ]' in txt else "[RX     ]"
-            out = f"[{ts()}] {marker} {txt}"
-            print(out)
-            if logf:
-                logf.write(out + '\n')
-                logf.flush()
-        time.sleep(0.02)
+            port = candidates[0]
+            s = open_port_safely(port, 420000)
+            print(f"[{ts()}] RX: opened {port}")
+            while True:
+                n = s.in_waiting
+                if n:
+                    buf.extend(s.read(n))
+                while b'\n' in buf:
+                    line, _, buf = buf.partition(b'\n')
+                    txt = line.rstrip(b'\r').decode('utf-8', errors='replace').strip()
+                    if not txt:
+                        continue
+                    marker = "[RX FREQ]" if '[FREQ]' in txt else "[RX     ]"
+                    out = f"[{ts()}] {marker} {txt}"
+                    print(out)
+                    if logf:
+                        logf.write(out + '\n')
+                        logf.flush()
+                time.sleep(0.02)
+        except (OSError, serial.SerialException) as e:
+            print(f"[{ts()}] RX: port lost ({e}); reopening...", file=sys.stderr)
+            try:
+                if s is not None: s.close()
+            except Exception:
+                pass
+            time.sleep(0.5)
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
@@ -182,13 +232,30 @@ def main():
         t.start()
         print(f"[{ts()}] Listening RX debug on {args.rx} @ 420000")
 
-    # TX CRSF parse
-    try:
-        tx = serial.Serial(args.tx, args.baud, timeout=0.1)
-    except Exception as e:
-        print(f"ERROR opening TX port {args.tx}: {e}", file=sys.stderr)
-        sys.exit(1)
-    print(f"[{ts()}] Listening TX CRSF on {args.tx} @ {args.baud}")
+    # TX CRSF parse — must NOT toggle DTR/RTS (wired to EN/GPIO0 on Nomad CP2102).
+    # Resilient to re-enumeration: accepts a glob (e.g. /dev/cu.usbserial-*)
+    # and re-opens whenever the OS drops the device.
+    import glob as _glob
+    def open_tx():
+        candidates = _glob.glob(args.tx) if '*' in args.tx else [args.tx]
+        rx_held = getattr(rx_debug_thread, '_taken_rx', None)
+        candidates = [p for p in candidates if p != rx_held]
+        if not candidates:
+            return None, None
+        port = candidates[0]
+        return open_port_safely(port, args.baud), port
+
+    tx, tx_port = None, None
+    while tx is None:
+        try:
+            tx, tx_port = open_tx()
+            if tx is None:
+                print(f"[{ts()}] TX: no port matching {args.tx} yet; waiting...", file=sys.stderr)
+                time.sleep(1.0)
+        except Exception as e:
+            print(f"[{ts()}] TX: open {args.tx} failed: {e}; retry in 1s", file=sys.stderr)
+            time.sleep(1.0)
+    print(f"[{ts()}] Listening TX CRSF on {tx_port} @ {args.baud}")
     print(f"[{ts()}] Press Ctrl-C to stop. Link-state changes flagged with '>>>'")
     print("-" * 100)
 
@@ -202,7 +269,25 @@ def main():
 
     try:
         while True:
-            n = tx.in_waiting
+            try:
+                n = tx.in_waiting
+            except (OSError, serial.SerialException) as e:
+                print(f"[{ts()}] TX: port lost ({e}); reopening...", file=sys.stderr)
+                try: tx.close()
+                except Exception: pass
+                tx = None
+                while tx is None:
+                    try:
+                        tx, tx_port = open_tx()
+                        if tx is None:
+                            time.sleep(0.5)
+                    except Exception:
+                        time.sleep(0.5)
+                print(f"[{ts()}] TX: reopened {tx_port}")
+                parser = CrsfParser()  # discard partial frame
+                continue
+            _n_alias = n
+            n = _n_alias
             if n:
                 chunk = tx.read(n)
                 for ftype, payload in parser.feed(chunk):
@@ -248,6 +333,15 @@ def main():
                     last_up_lq = s['up_lq']
                     last_dn_lq = s['dn_lq']
                     last_rfmode = s['rf_mode']
+                # Drain TX-side interleaved debug text lines (DBGLN output
+                # from the firmware sharing this UART with CRSF telemetry).
+                for txt in parser.drain_text_lines():
+                    marker = "[TX FREQ]" if '[FREQ]' in txt else "[TX     ]"
+                    out = f"[{ts()}] {marker} {txt}"
+                    print(out)
+                    if logf:
+                        logf.write(out + '\n')
+                        logf.flush()
             else:
                 time.sleep(0.02)
     except KeyboardInterrupt:
