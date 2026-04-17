@@ -150,13 +150,31 @@ transitioning from FS mode and the other from Standby mode. This causes the tx d
         hal.WriteCommand(LR11XX_SYSTEM_SET_REGMODE_OC, RegMode, sizeof(RegMode), SX12XX_Radio_All); // Enable DCDC converter instead of LDO
     }
 
-    // 2.1.3.1 CalibImage
+    CalibrateImageForRange(minimumFrequency, maximumFrequency);
+
+    return true;
+}
+
+void LR1121Driver::CalibrateImageForRange(uint32_t minimumFrequency, uint32_t maximumFrequency,
+                                          SX12XX_Radio_Number_t radioNumber)
+{
+    // 2.1.3.1 CalibImage — per LR1121 User Manual §2.1.3.1 (page 15) this
+    // command tunes the image-rejection filter on the sub-GHz RFI_N/P_LF
+    // path ONLY (150-960 MHz). The 2.4 GHz RFIO_HF path has its own
+    // factory-trimmed front end and has no host-facing image calibration.
+    // Calling CalibImage with 2.4 GHz inputs would produce uint8 overflow
+    // garbage bytes that get silently ignored on the inactive LF path.
+    // Guard on 960 MHz so the intent matches behavior.
+    if (maximumFrequency > 960000000UL) return;
+
     uint8_t CalImagebuf[2];
     CalImagebuf[0] = ((minimumFrequency / 1000000 ) - 1) / 4;       // Freq1 = floor( (fmin_mhz - 1)/4)
     CalImagebuf[1] = 1 + ((maximumFrequency / 1000000 ) + 1) / 4;   // Freq2 = ceil( (fmax_mhz + 1)/4)
-    hal.WriteCommand(LR11XX_SYSTEM_CALIBRATE_IMAGE_OC, CalImagebuf, sizeof(CalImagebuf), SX12XX_Radio_All);
-
-    return true;
+    hal.WriteCommand(LR11XX_SYSTEM_CALIBRATE_IMAGE_OC, CalImagebuf, sizeof(CalImagebuf), radioNumber);
+    // CalibImage holds the chip BUSY for ~3.5 ms. If the next hop's
+    // SetFrequencyReg is issued while BUSY is high the command is dropped,
+    // making the first post-swap hop unreliable. Block until complete.
+    hal.WaitOnBusy(radioNumber);
 }
 
 // 12.2.1 SetTxCw

@@ -165,6 +165,77 @@ void test_FHSSbuildConfig_sequence_wellformed(void)
     }
 }
 
+// PR 7: dual-band
+static FHSSFreqParams sampleDbParams()
+{
+    FHSSFreqParams p{};
+    // ISM2G4-ish narrow for test (reg-val == Hz under UNIT_TEST)
+    p.freq_start   = FREQ_HZ_TO_REG_VAL(2400400000UL);
+    p.freq_stop    = FREQ_HZ_TO_REG_VAL(2479400000UL);
+    p.freq_count   = 80;
+    p.sync_channel = 40;
+    for (uint8_t i = 0; i < FHSS_FREQ_NAME_MAXLEN; i++) p.name[i] = 0;
+    p.name[0] = 'H'; p.name[1] = 'I';
+    return p;
+}
+
+void test_FHSSbuildConfig_dualband_builds_second_sequence(void)
+{
+    FHSSFreqParams p  = sampleParams();
+    FHSSFreqParams db = sampleDbParams();
+    FHSSFreqConfig c{};
+    TEST_ASSERT_TRUE(FHSSbuildConfig(&c, &p, 0xDEADBEEFUL, &db));
+    TEST_ASSERT_TRUE(c.has_dualband);
+    TEST_ASSERT_EQUAL_UINT8(db.freq_count, c.db_params.freq_count);
+    TEST_ASSERT_EQUAL_UINT8(db.sync_channel, c.db_params.sync_channel);
+    TEST_ASSERT_NOT_EQUAL(0, c.db_freq_spread);
+    TEST_ASSERT_EQUAL_UINT16((FHSS_SEQUENCE_LEN / db.freq_count) * db.freq_count, c.db_band_count);
+    for (uint16_t i = 0; i < c.db_band_count; i++) {
+        TEST_ASSERT_TRUE_MESSAGE(c.db_sequence[i] < db.freq_count, "db entry must be < db.freq_count");
+    }
+    // Sync channel every db.freq_count-sized block
+    for (uint16_t i = 0; i < c.db_band_count; i += db.freq_count) {
+        TEST_ASSERT_EQUAL_UINT8(db.sync_channel, c.db_sequence[i]);
+    }
+}
+
+void test_FHSSbuildConfig_dualband_deterministic(void)
+{
+    FHSSFreqParams p  = sampleParams();
+    FHSSFreqParams db = sampleDbParams();
+    FHSSFreqConfig a{}, b{};
+    TEST_ASSERT_TRUE(FHSSbuildConfig(&a, &p, 0xCAFEBABEUL, &db));
+    TEST_ASSERT_TRUE(FHSSbuildConfig(&b, &p, 0xCAFEBABEUL, &db));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(a.db_sequence, b.db_sequence, FHSS_SEQUENCE_LEN);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(a.sequence,    b.sequence,    FHSS_SEQUENCE_LEN);
+}
+
+void test_FHSSbuildConfig_null_dbParams_is_single_band(void)
+{
+    FHSSFreqParams p = sampleParams();
+    FHSSFreqConfig c{};
+    TEST_ASSERT_TRUE(FHSSbuildConfig(&c, &p, 1));
+    TEST_ASSERT_FALSE(c.has_dualband);
+}
+
+void test_FHSSbuildConfig_dualband_rejects_invalid(void)
+{
+    FHSSFreqParams p  = sampleParams();
+    FHSSFreqParams db = sampleDbParams();
+    FHSSFreqConfig c{};
+
+    db.freq_count = 1;
+    TEST_ASSERT_FALSE_MESSAGE(FHSSbuildConfig(&c, &p, 1, &db), "db count<2 must fail");
+    db = sampleDbParams();
+
+    db.freq_start = db.freq_stop;
+    TEST_ASSERT_FALSE_MESSAGE(FHSSbuildConfig(&c, &p, 1, &db), "db start>=stop must fail");
+    db = sampleDbParams();
+
+    db.sync_channel = db.freq_count;
+    TEST_ASSERT_FALSE_MESSAGE(FHSSbuildConfig(&c, &p, 1, &db), "db sync>=count must fail");
+}
+
 void test_FHSSbuildConfig_pool_slots(void)
 {
     // Each slot is a distinct memory region and round-trips independently.

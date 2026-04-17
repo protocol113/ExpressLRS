@@ -1522,6 +1522,19 @@ void loop()
   FHSSwatchdogTick(lastFhssTick == 0 ? 0 : now - lastFhssTick);
   lastFhssTick = now;
 
+#if defined(RADIO_LR1121)
+  // runtime-freq-v2: after an epoch swap the ISR set a pending flag with the
+  // new band range. Re-calibrate image rejection for the narrow active range
+  // on Radio_1 only (the sub-GHz chip we're swapping); Radio_2 (2.4 GHz on
+  // Nomad X-Band / DBR4) stays untouched so its link isn't interrupted.
+  uint32_t calMinHz, calMaxHz;
+  if (FHSSconsumePendingImageCal(&calMinHz, &calMaxHz))
+  {
+    Radio.CalibrateImageForRange(calMinHz, calMaxHz, SX12XX_Radio_1);
+  }
+#endif
+  FHSSlogStateIfChanged(OtaNonce);
+
   HandleUARTout(); // Only used for non-CRSF output
 
   #if defined(USE_BLE_JOYSTICK)

@@ -12,19 +12,27 @@
 
 uint32_t FreqStageComputeLeadNonces(uint8_t tlmDenom)
 {
-    // STAGE payload is 28 B; Stubborn fragments it into ~5 chunks, each
-    // delivered one-per-telemetry-slot. ACK is 1 chunk on the downlink.
-    // Worst-case round trip: (5 + 1) chunks * tlmDenom packets per chunk.
-    // 3x headroom covers occasional Stubborn resync + retransmit.
-    // Floor at 500 packets (~1 s @ 500 Hz, ~10 s @ 50 Hz binding) so even
-    // 1:1 TLM has margin and ACK has time to arrive before epoch.
+    // ELRS OtaNonce is uint8_t and wraps every 256 packets. The swap-epoch
+    // comparison in FHSSactivateIfEpochReached uses wrap-aware 8-bit math
+    // which requires the lead to stay under 128 packets. Cap at 120 for
+    // safety margin.
+    //
+    // At 100 Hz: 120 packets = 1.2s. At 500 Hz: 240ms.
+    // Stubborn round-trip: ~(chunks * tlmDenom) packets per direction.
+    // This fits low tlm ratios (1:2..1:8) at typical rates. Higher tlm
+    // ratios (1:32+) may exceed this window and time out — that's a
+    // known limitation of the 8-bit nonce; lifting it requires a 32-bit
+    // nonce extension (tracked for a future PR).
     const uint32_t chunksRoundTrip = 6;
-    const uint32_t headroom        = 3;
-    const uint32_t floorNonces     = 500;
+    const uint32_t headroom        = 2;
+    const uint32_t floorNonces     = 60;
+    const uint32_t ceilNonces      = 120;
 
     uint32_t denom = tlmDenom == 0 ? 1 : tlmDenom;
     uint32_t lead  = chunksRoundTrip * denom * headroom;
-    return lead < floorNonces ? floorNonces : lead;
+    if (lead < floorNonces) lead = floorNonces;
+    if (lead > ceilNonces)  lead = ceilNonces;
+    return lead;
 }
 
 // --- Msg builder ----------------------------------------------------------
@@ -40,7 +48,14 @@ FreqStageMsg FreqStageBuildMsgFromConfig(const FHSSFreqConfig *cfg, uint32_t cur
     m.primary_stop_hz  = cfg->params.freq_stop;
     m.primary_count    = cfg->params.freq_count;
     m.primary_sync     = cfg->params.sync_channel;
-    // Dual-band deferred to PR 7; zero fields stay zero.
+    if (cfg->has_dualband)
+    {
+        m.flags       |= FREQ_STAGE_FLAG_HAS_DUALBAND;
+        m.db_start_hz  = cfg->db_params.freq_start;
+        m.db_stop_hz   = cfg->db_params.freq_stop;
+        m.db_count     = cfg->db_params.freq_count;
+        m.db_sync      = cfg->db_params.sync_channel;
+    }
     m.epoch_nonce      = currentNonce + FreqStageComputeLeadNonces(tlmDenom);
     return m;
 }
@@ -75,30 +90,76 @@ FreqStageAckStatus FreqStageRxHandleStage(const uint8_t *payload,
         return FREQ_ACK_OK;
     }
 
-    // Epoch must be in the future relative to current nonce. Reject stale
-    // stages (e.g., from a ghost retransmit after a rebind).
-    if (msg.epoch_nonce <= currentNonce) return FREQ_ACK_BAD_VERSION;
+    // Epoch must be in the future relative to current nonce. Use the same
+    // wrap-aware int8 delta trick as FHSSactivateIfEpochReached — OtaNonce
+    // is uint8_t (wraps every 256 packets). A plain uint32 `<=` compare
+    // over-rejects after the RX's OtaNonce has wrapped past the epoch
+    // value stored in msg.epoch_nonce (which is the raw wire uint32
+    // `currentNonce + lead` from TX, unsigned-wrap-agnostic). In the
+    // wrap-aware frame, "future" means delta of (epoch - current) in
+    // [0, 127]; negative delta = stale.
+    {
+        int8_t epochDelta = (int8_t)((uint8_t)msg.epoch_nonce - (uint8_t)currentNonce);
+        if (epochDelta <= 0) return FREQ_ACK_BAD_VERSION;
+    }
 
-    // PR 3.5 scope: primary band only. Dual-band STAGE → UNSUPPORTED.
-    if (msg.flags & FREQ_STAGE_FLAG_HAS_DUALBAND) return FREQ_ACK_UNSUPPORTED;
-    if (!(msg.flags & FREQ_STAGE_FLAG_HAS_PRIMARY)) return FREQ_ACK_UNSUPPORTED;
+    // Caller must indicate at least one band; empty STAGE is malformed.
+    if (!(msg.flags & (FREQ_STAGE_FLAG_HAS_PRIMARY | FREQ_STAGE_FLAG_HAS_DUALBAND)))
+        return FREQ_ACK_UNSUPPORTED;
 
-    // Build into the STAGED pool slot.
+    // Build into the STAGED pool slot. PR 7: when the STAGE carries only
+    // one band's changes, copy the OTHER band's params from the currently
+    // active config so FHSSbuildConfig can rebuild both sequences with
+    // identical params — the unchanged side produces a bit-identical
+    // sequence (deterministic on UID seed), so mirroring it back is a
+    // no-op behavior-wise but keeps the on-chip state coherent.
     FHSSFreqConfig *staged = FHSSgetPoolSlot(FHSS_SLOT_STAGED);
     if (staged == nullptr) return FREQ_ACK_BUILD_FAILED;
 
-    FHSSFreqParams params{};
-    // Hz → register-value conversion happens at this boundary (per wire
-    // protocol contract: Hz on the air, reg-val in memory).
-    params.freq_start   = FREQ_HZ_TO_REG_VAL(msg.primary_start_hz);
-    params.freq_stop    = FREQ_HZ_TO_REG_VAL(msg.primary_stop_hz);
-    params.freq_count   = msg.primary_count;
-    params.sync_channel = msg.primary_sync;
-    // Name is TX-UX only; carry a generic marker. RX never surfaces it.
-    strncpy(params.name, "STAGED", FHSS_FREQ_NAME_MAXLEN - 1);
-    params.name[FHSS_FREQ_NAME_MAXLEN - 1] = '\0';
+    const FHSSFreqConfig *active = FHSSgetActiveConfig();
 
-    if (!FHSSbuildConfig(staged, &params, uidSeed)) return FREQ_ACK_BUILD_FAILED;
+    FHSSFreqParams primary{};
+    if (msg.flags & FREQ_STAGE_FLAG_HAS_PRIMARY)
+    {
+        // Hz → register-value conversion happens at this boundary (per wire
+        // protocol contract: Hz on the air, reg-val in memory).
+        primary.freq_start   = FREQ_HZ_TO_REG_VAL(msg.primary_start_hz);
+        primary.freq_stop    = FREQ_HZ_TO_REG_VAL(msg.primary_stop_hz);
+        primary.freq_count   = msg.primary_count;
+        primary.sync_channel = msg.primary_sync;
+    }
+    else if (active != nullptr)
+    {
+        primary = active->params;
+    }
+    else
+    {
+        return FREQ_ACK_UNSUPPORTED;  // primary unchanged + no active to copy
+    }
+    // Name is TX-UX only; carry a generic marker. RX never surfaces it.
+    strncpy(primary.name, "STAGED", FHSS_FREQ_NAME_MAXLEN - 1);
+    primary.name[FHSS_FREQ_NAME_MAXLEN - 1] = '\0';
+
+    FHSSFreqParams dbParams{};
+    bool hasDb = false;
+    if (msg.flags & FREQ_STAGE_FLAG_HAS_DUALBAND)
+    {
+        dbParams.freq_start   = FREQ_HZ_TO_REG_VAL(msg.db_start_hz);
+        dbParams.freq_stop    = FREQ_HZ_TO_REG_VAL(msg.db_stop_hz);
+        dbParams.freq_count   = msg.db_count;
+        dbParams.sync_channel = msg.db_sync;
+        strncpy(dbParams.name, "STAGED_DB", FHSS_FREQ_NAME_MAXLEN - 1);
+        dbParams.name[FHSS_FREQ_NAME_MAXLEN - 1] = '\0';
+        hasDb = true;
+    }
+    else if (active != nullptr && active->has_dualband)
+    {
+        dbParams = active->db_params;
+        hasDb = true;
+    }
+
+    if (!FHSSbuildConfig(staged, &primary, uidSeed, hasDb ? &dbParams : nullptr))
+        return FREQ_ACK_BUILD_FAILED;
 
     // RX stages with requireAck=false: receiving STAGE IS the proof.
     if (!FHSSstageConfig(staged, msg.epoch_nonce, /*requireAck=*/false))
@@ -108,8 +169,9 @@ FreqStageAckStatus FreqStageRxHandleStage(const uint8_t *payload,
 
     g_lastAcceptedEpoch  = msg.epoch_nonce;
     g_hasAcceptedAnEpoch = true;
-    FREQ_DBG("rx stage OK name=%.16s count=%u epoch=%u",
-             params.name, (unsigned)params.freq_count, (unsigned)msg.epoch_nonce);
+    FREQ_DBG("rx stage OK pri=%.16s count=%u db=%d epoch=%u",
+             primary.name, (unsigned)primary.freq_count,
+             (int)hasDb, (unsigned)msg.epoch_nonce);
     return FREQ_ACK_OK;
 }
 
@@ -141,14 +203,28 @@ bool FreqStageSendStage(const FHSSFreqConfig *cfg, uint32_t currentNonce, uint8_
     uint8_t buf[FREQ_STAGE_WIRE_LEN];
     if (encodeFreqStage(&msg, buf, sizeof(buf)) != FREQ_STAGE_WIRE_LEN) return false;
 
+    // Single send. The uplink MSP path feeds through TXOTAConnector which
+    // hands the buffer to DataUlSender (StubbornSender) — that layer
+    // already handles reliable chunked delivery with RX-confirmed retry.
+    // An earlier version retransmitted 5x from here, but that just queued
+    // duplicate copies behind the StubbornSender's existing retry loop,
+    // delaying rather than reinforcing delivery. Caveat: forwardMessage
+    // only queues when connectionState == connected; if the caller hits
+    // Apply mid-dropout the STAGE is silently dropped. That's acceptable
+    // here — swap on dropped link is fragile anyway; recovery comes from
+    // persistence + boot-to-stored-state (PR 4/5).
     if (!txSendRxtxConfig((uint8_t)MSP_ELRS_RXTX_CONFIG_SUBCMD::FREQ_STAGE, buf, sizeof(buf))) return false;
 
     FREQ_DBG("tx send stage name=%s nonce=%u epoch=%u tlm=%u",
              cfg->params.name, (unsigned)currentNonce, (unsigned)msg.epoch_nonce, (unsigned)tlmDenom);
 
-    // Record local state. TX uses requireAck=true — will only swap at
-    // epoch if FHSSnotifyAckReceived(msg.epoch_nonce) is called first.
-    return FHSSstageConfig(cfg, msg.epoch_nonce, /*requireAck=*/true);
+    // requireAck=false: same swap-at-epoch contract as RX. At high tlm
+    // denoms the downlink MSP ACK round-trip exceeds our 120-nonce epoch
+    // budget (8-bit OtaNonce wrap limit), so requiring the ACK caused
+    // TX-abort-alone failures. Safety net is the 1.5s watchdog on both
+    // sides: if either side gets no valid packets on the new band, it
+    // reverts to rendezvous. RX stages the same way.
+    return FHSSstageConfig(cfg, msg.epoch_nonce, /*requireAck=*/false);
 }
 
 bool FreqStageSendAbort(void)

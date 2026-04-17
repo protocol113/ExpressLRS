@@ -1112,7 +1112,20 @@ bool ICACHE_RAM_ATTR ProcessRFPacket(SX12xxDriverCommon::rx_status const status)
     doStartTimer = false;
     unsigned long now = millis();
 
-    LastValidPacket = now;
+    // runtime-freq-v2: Gate LastValidPacket refresh on model-match so a
+    // stray CRC-lucky packet from a foreign transmitter can't keep this
+    // RX "connected" indefinitely. 24-bit OtaCrc gives ~1-in-16M false-
+    // positive per packet; at 500Hz link that's one per ~9 hours average,
+    // but LOCK_ON_FIRST_CONNECTION + any ambient 915 MHz traffic makes it
+    // plausible enough that users observed RX stuck in "connected" after
+    // TX power-off. SYNC packets are allowed through unconditionally
+    // because ProcessRfPacket_SYNC is what ESTABLISHES modelMatch in the
+    // first place — gating SYNC on model-match would deadlock initial bind.
+    bool isSync = (otaPktPtr->std.type == PACKET_TYPE_SYNC);
+    if (isSync || connectionHasModelMatch)
+    {
+        LastValidPacket = now;
+    }
 
     Radio.CheckForSecondPacket();
     if (Radio.hasSecondRadioGotData)
@@ -2063,6 +2076,19 @@ void loop()
     static uint32_t lastFhssTick = 0;
     FHSSwatchdogTick(lastFhssTick == 0 ? 0 : now - lastFhssTick);
     lastFhssTick = now;
+
+#if defined(RADIO_LR1121)
+    // runtime-freq-v2: re-calibrate image rejection for the narrow new band
+    // after an epoch swap. Main-loop (non-ISR) context required for SPI.
+    // Radio_1 only — Radio_2 (2.4 GHz on DBR4) stays on its original band
+    // and shouldn't be deafened by a sub-GHz-only swap.
+    uint32_t calMinHz, calMaxHz;
+    if (FHSSconsumePendingImageCal(&calMinHz, &calMaxHz))
+    {
+        Radio.CalibrateImageForRange(calMinHz, calMaxHz, SX12XX_Radio_1);
+    }
+#endif
+    FHSSlogStateIfChanged(OtaNonce);
 
     if (DataUlReceiver.HasFinishedData())
     {

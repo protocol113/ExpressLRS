@@ -270,6 +270,7 @@ void CRSFEndpoint::pushResponseChunk(commandParameter *cmd, const bool isElrs)
     }
 }
 
+
 void CRSFEndpoint::sendCommandResponse(commandParameter *cmd, const commandStep_e step, const char *message)
 {
     cmd->step = step;

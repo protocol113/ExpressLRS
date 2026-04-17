@@ -107,6 +107,8 @@ void RxTxEndpoint::handleMspSetRxTxConfig(crsf_ext_header_t *extMessage)
                     OtaGetUidSeed(),
                     OtaNonce,
                     &stageMsg);
+                DBGLN("[FREQ] rx got STAGE epoch=%u nonce=%u status=%u",
+                      (unsigned)stageMsg.epoch_nonce, (unsigned)OtaNonce, (unsigned)status);
 
                 // Echo ACK with either OK + the epoch we accepted, or the
                 // error code. TX uses this to open its ACK gate on the
@@ -125,6 +127,8 @@ void RxTxEndpoint::handleMspSetRxTxConfig(crsf_ext_header_t *extMessage)
                     out.addByte((uint8_t)MSP_ELRS_RXTX_CONFIG_SUBCMD::FREQ_STAGE_ACK);
                     for (uint8_t i = 0; i < FREQ_ACK_WIRE_LEN; i++) out.addByte(ackBuf[i]);
                     crsfRouter.AddMspMessage(&out, extMessage->orig_addr, getDeviceId());
+                    DBGLN("[FREQ] rx sent ACK epoch=%u status=%u",
+                          (unsigned)ack.epoch_nonce, (unsigned)ack.status);
                 }
             }
             #endif
@@ -136,6 +140,8 @@ void RxTxEndpoint::handleMspSetRxTxConfig(crsf_ext_header_t *extMessage)
                 FreqStageAck ack{};
                 if (decodeFreqAck(mspPayload, payloadLen, &ack))
                 {
+                    DBGLN("[FREQ] tx got ACK epoch=%u nonce=%u status=%u",
+                          (unsigned)ack.epoch_nonce, (unsigned)OtaNonce, (unsigned)ack.status);
                     if (ack.status == FREQ_ACK_OK)
                     {
                         FHSSnotifyAckReceived(ack.epoch_nonce);

@@ -89,19 +89,35 @@ struct FHSSFreqParams {
 
 // A fully-built runtime FHSS config. Once built, treat as immutable — the
 // pointer-swap activation path assumes the content doesn't change under it.
+//
+// PR 7: optionally carries a 2.4 GHz dual-band payload. `has_dualband` is
+// false for single-band (sub-GHz-only or 2.4-only) configs; true when the
+// hardware has a second radio chip on the high band and the user has
+// selected a preset for it. Both bands share the same epoch (atomic swap
+// on either/both-band change), but `mirrorLegacyGlobalsFromActive` only
+// updates the dual-band globals when this flag is set.
 struct FHSSFreqConfig {
     FHSSFreqParams params;
     uint32_t       freq_spread;   // (stop-start) * FREQ_SPREAD_SCALE / (count-1)
     uint16_t       band_count;    // (FHSS_SEQUENCE_LEN / count) * count
     uint8_t        sequence[FHSS_SEQUENCE_LEN];
+    bool           has_dualband;
+    FHSSFreqParams db_params;
+    uint32_t       db_freq_spread;
+    uint16_t       db_band_count;
+    uint8_t        db_sequence[FHSS_SEQUENCE_LEN];
 };
 
 // Build an FHSSFreqConfig from params + seed into dst.
 // Pure wrt dst: deterministic, same inputs → same output.
 // Caveat: shares the random.h RNG state (rngSeed), so not re-entrant across
 // threads/ISRs. That matches every other FHSS builder in this codebase.
-// Returns false on invalid params (count<2, start>=stop, sync>=count, null ptr).
-bool FHSSbuildConfig(FHSSFreqConfig *dst, const FHSSFreqParams *params, uint32_t seed);
+// Returns false on invalid primary params (count<2, start>=stop, sync>=count, null ptr).
+// If dbParams is non-null, also validates + builds the dual-band payload
+// (same failure modes). Pass nullptr for dbParams on single-band configs;
+// dst->has_dualband is set accordingly.
+bool FHSSbuildConfig(FHSSFreqConfig *dst, const FHSSFreqParams *params, uint32_t seed,
+                     const FHSSFreqParams *dbParams = nullptr);
 
 // Access to the runtime config pool. PR 1 exposes these for tests; the
 // rendezvous / active wiring lands in PR 2.
@@ -112,6 +128,10 @@ FHSSFreqConfig *FHSSgetPoolSlot(FHSSConfigSlot slot);
 // reaching into FHSS internals.
 const fhss_config_t *FHSSgetCompileTimeDomain(uint8_t index);
 uint8_t              FHSSgetCompileTimeDomainCount(void);
+// PR 7: LR1121 dual-band presets (2.4 GHz). Returns nullptr / 0 on targets
+// that don't have a high-band chip.
+const fhss_config_t *FHSSgetCompileTimeDomainDb(uint8_t index);
+uint8_t              FHSSgetCompileTimeDomainDbCount(void);
 
 // Negotiation state observable from outside (tests, Lua status line, logs).
 enum FHSSRuntimeState : uint8_t {
@@ -127,6 +147,9 @@ enum FHSSRuntimeState : uint8_t {
 const FHSSFreqConfig *FHSSgetRendezvousConfig(void);
 const FHSSFreqConfig *FHSSgetActiveConfig(void);
 const FHSSFreqConfig *FHSSgetStagedConfig(void);
+// Epoch of the currently-armed swap (0 if nothing staged). Used by the Lua
+// Freq Config status line to show the countdown toward the swap nonce.
+uint32_t              FHSSgetStagedEpoch(void);
 FHSSRuntimeState      FHSSgetRuntimeState(void);
 
 // Stage a built config. The staged pointer must remain valid until the
@@ -159,15 +182,34 @@ void FHSSrevertToRendezvous(void);
 void FHSSnotifyValidPacket(void);
 
 // Advance the watchdog by deltaMs. If a swap is armed and no valid packet
-// has been seen within FHSS_WATCHDOG_MS, auto-reverts to rendezvous.
+// has been seen within FHSS_WATCHDOG_MS (3000 ms), auto-reverts to rendezvous.
 void FHSSwatchdogTick(uint32_t deltaMs);
 
 // Abort any staged config without swapping. Leaves activeConfig alone.
 void FHSSabortStagedConfig(void);
 
-// 1500 ms default — window for the first valid packet on the new config.
+// Main-loop poll for deferred post-swap work. Returns true exactly once per
+// band change, with the new range (in Hz) written through. The caller
+// (tx_main / rx_main) invokes Radio.CalibrateImageForRange(min, max) on
+// LR1121 targets; other radios ignore. Flag is cleared on read. Safe to call
+// every loop iteration; no-op when nothing pending.
+bool FHSSconsumePendingImageCal(uint32_t *minHzOut, uint32_t *maxHzOut);
+
+// Observability: emit a DBGLN line when FHSS runtime state transitions
+// (state, active/staged pointer, armed/ack flags). No-op when nothing
+// changed. Called every loop from tx_main/rx_main. Under RUNTIME_FREQ_DEBUG
+// only; a no-op otherwise.
+void FHSSlogStateIfChanged(uint32_t currentNonce);
+
+// 3000 ms default — must exceed ELRS's own DisconnectTimeoutMs (2500 ms,
+// common.cpp:94-103) and RxLockTimeoutMs. If the watchdog fires before the
+// connection machinery has a chance to resync via SYNC packets, we revert
+// prematurely while RX is still on the new band — causing bind-loss and
+// requiring manual power-cycle. 3s gives the full RxLockTimeoutMs window
+// plus margin for SYNC re-alignment drift (SyncPktIntervalConnected is
+// 2.5-3s).
 #ifndef FHSS_WATCHDOG_MS
-#define FHSS_WATCHDOG_MS 1500
+#define FHSS_WATCHDOG_MS 3000
 #endif
 
 static inline uint32_t FHSSgetMinimumFreq(void)

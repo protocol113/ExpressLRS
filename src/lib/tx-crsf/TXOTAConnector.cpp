@@ -59,7 +59,21 @@ void TXOTAConnector::unlockMessage()
 
 void TXOTAConnector::forwardMessage(const crsf_header_t *message)
 {
-    if (connectionState == connected)
+    // runtime-freq-v2: allow uplink MSP queueing in any normal link state,
+    // not just "connected". The original gate was surprising: on dual-band
+    // Nomad hardware the downlink telemetry rides chip 2, so if chip 2 is
+    // misaligned (e.g. during a half-complete high-band swap) the TX flips
+    // connectionState to "disconnected" even though uplink chip 1 is still
+    // transmitting fine. Under the old gate, Apply-a-new-preset MSPs got
+    // silently dropped right at the doorway — the uplink STAGE never
+    // reached RX, state diverged, bind-loss ensued.
+    //
+    // MODE_STATES is the enum sentinel — everything below it (connected,
+    // tentative, awaitingModelId, disconnected) is a normal radio-active
+    // state where the OTA packet loop is running and uplink can carry
+    // MSP. Special modes (noCrossfire, bleJoystick, wifiUpdate, etc.)
+    // above MODE_STATES aren't transmitting and should still drop.
+    if (connectionState < MODE_STATES)
     {
         const uint8_t length = message->frame_size + 2;
         if (length > ELRS_DATA_UL_BUFFER)

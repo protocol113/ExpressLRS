@@ -190,19 +190,39 @@ static stringParameter luaELRSversion = {
 // follow-up). SX128X is 2.4-only and has a single domain, so runtime
 // switching there is meaningless.
 
-// Built-in preset names. Must match the order of FHSS.cpp `domains[]`.
-#define STR_FREQ_PRESETS "AU915;FCC915;EU868;IN866;AU433;EU433;US433;US433W"
+// Built-in preset names. Order must exactly match FHSS.cpp `domains[]`.
+// First 8 are the legacy regulatory presets (indices 0-7 = firmwareOptions.domain).
+// Indices 8+ are v1's runtime wide-tuning presets for max LR1121 LF-path range.
+#define STR_FREQ_PRESETS \
+    "AU915;FCC915;EU868;IN866;AU433;EU433;US433;US433W;" \
+    "TrainA;700-779;780-859;860-939;881-960;MaxRangeLo"
+// PR 7: 2.4 GHz presets. Order matches domainsDualBand[] in FHSS.cpp.
+// Mirrors v1's dense runtime-freq preset list for the LR1121 HF path
+// (1900-2500 MHz). MaxRangeHi is the full HF tuning span.
+#define STR_FREQ_PRESETS_DB \
+    "ISM2G4;CE_LBT;ISM2G4W;SBand;Train24;" \
+    "1900-1979;1980-2059;2060-2139;2140-2219;2220-2299;" \
+    "2300-2379;2380-2459;2421-2500;MaxRangeHi"
 
 static folderParameter luaFreqFolder = {
     {"Freq Config", CRSF_FOLDER}
 };
 
 static selectionParameter luaFreqPreset = {
-    {"Preset", CRSF_TEXT_SELECTION},
+    {"Primary", CRSF_TEXT_SELECTION},
     0, // updated to match the compile-time domain at registration
     STR_FREQ_PRESETS,
     STR_EMPTYSPACE
 };
+
+#if defined(RADIO_LR1121)
+static selectionParameter luaFreqPresetDb = {
+    {"High Band", CRSF_TEXT_SELECTION},
+    0, // updated to match the compile-time dual-band default at registration
+    STR_FREQ_PRESETS_DB,
+    STR_EMPTYSPACE
+};
+#endif
 
 static commandParameter luaFreqApply = {
     {"Apply", CRSF_COMMAND},
@@ -217,14 +237,11 @@ static commandParameter luaFreqApply = {
 // watchdog + re-Apply-different-preset are the only paths back; link is
 // protected either way.
 
-// Backing storage for the runtime status display. Refreshed by
-// updateParameters() on every Lua poll so the user sees state
-// transitions live ("RDV: FCC915" → "STAGED" → "ACTIVE: EU868").
-static char luaFreqStatusBuf[28];
-static stringParameter luaFreqStatus = {
-    {"Status", CRSF_INFO},
-    luaFreqStatusBuf
-};
+// Runtime FHSS state is surfaced live via the ELRS_STATUS (0x2E) title bar
+// — see sendELRSstatus() below. In-menu stringParameters were removed
+// because elrs.lua silently drops unsolicited PARAMETER_SETTINGS_ENTRY
+// frames (loadQ[#loadQ] fieldId check), so those fields only refreshed
+// on user navigation. The title-bar piggyback auto-polls every ~100 ms.
 #endif
 
 //---------------------------- WiFi -----------------------------
@@ -422,6 +439,51 @@ void TXModuleEndpoint::sendELRSstatus(const crsf_addr_e origin)
           break;
       }
   }
+
+  // PR 7: piggyback FHSS runtime state onto the ELRS_STATUS title-bar
+  // message whenever no higher-priority warning has claimed it. The
+  // handset polls this frame every ~100 ms and renders `msg` in the
+  // title bar if `elrsFlags > 3`. Real warnings (Model Mismatch, Armed,
+  // Not-while-connected) keep priority because they set higher bits
+  // and fill warningInfo first — we only fall back to FHSS state when
+  // warningInfo is still empty after the priority loop. params->flags
+  // gets the WARNING1 bit OR'd in (outgoing only; luaWarningFlags stays
+  // clean) so the handset's >3 threshold fires. The stringParameters
+  // in the Freq Config folder remain as the authoritative on-navigation
+  // detail view; this is just the always-visible quick glance.
+#if defined(RADIO_LR1121)
+  char fhssTitleBuf[32] = {0};
+  bool fhssTitleFilled = false;
+  if (warningInfo[0] == '\0')
+  {
+    const FHSSFreqConfig *act = FHSSgetActiveConfig();
+    const char *stateStr = "?";
+    switch (FHSSgetRuntimeState())
+    {
+      case FHSS_STATE_RENDEZVOUS: stateStr = "RDV";    break;
+      case FHSS_STATE_STAGED:     stateStr = "STGD";   break;
+      case FHSS_STATE_SWITCHING:  stateStr = "SWTCH";  break;
+      case FHSS_STATE_ACTIVE:     stateStr = "ACTV";   break;
+      case FHSS_STATE_FALLBACK:   stateStr = "FALLBK"; break;
+    }
+    const char *pri = (act != nullptr) ? act->params.name : "-";
+    const char *hi  = (act != nullptr && act->has_dualband) ? act->db_params.name : nullptr;
+    if (hi != nullptr)
+    {
+      snprintf(fhssTitleBuf, sizeof(fhssTitleBuf), "%s %.8s+%.8s", stateStr, pri, hi);
+    }
+    else
+    {
+      snprintf(fhssTitleBuf, sizeof(fhssTitleBuf), "%s %.16s", stateStr, pri);
+    }
+    if (fhssTitleBuf[0] != '\0')
+    {
+      warningInfo     = fhssTitleBuf;
+      fhssTitleFilled = true;
+    }
+  }
+#endif
+
   const uint8_t payloadSize = sizeof(elrsStatusParameter) + strlen(warningInfo) + 1;
   uint8_t buffer[sizeof(crsf_ext_header_t) + payloadSize + 1];
   const auto params = (elrsStatusParameter *)&buffer[sizeof(crsf_ext_header_t)];
@@ -433,6 +495,16 @@ void TXModuleEndpoint::sendELRSstatus(const crsf_addr_e origin)
   params->pktsBad = CRSFHandset::BadPktsCountResult;
   params->pktsGood = htobe16(CRSFHandset::GoodPktsCountResult);
   params->flags = luaWarningFlags;
+#if defined(RADIO_LR1121)
+  // Force bit 4 in the outgoing flags (not in the stored luaWarningFlags)
+  // so the handset's `elrsFlags > 3` render gate fires for our FHSS msg.
+  // Only when we actually filled the msg — never when a real warning has
+  // already set higher bits.
+  if (fhssTitleFilled)
+  {
+    params->flags |= (1 << LUA_FLAG_WARNING1);
+  }
+#endif
   // to support sending a params.msg, buffer should be extended by the strlen of the message
   // and copied into params->msg (with trailing null)
   strcpy(params->msg, warningInfo);
@@ -1031,7 +1103,23 @@ void TXModuleEndpoint::registerParameters()
   // the Stubborn uplink, and arms the TX-side ACK gate. Revert cancels
   // any pending stage and falls back to the rendezvous config.
   registerParameter(&luaFreqFolder);
-  registerParameter(&luaFreqPreset, nullptr, luaFreqFolder.common.id);
+  // Must provide a setter callback — the framework's parameter-write handler
+  // (CRSFEndpoint::parameterUpdateReq) silently drops writes when the
+  // callback is null, so without this the selector appears to revert to the
+  // previous value. We only need the in-memory ->value updated; persistence
+  // to TxConfig lands in PR 4.
+  registerParameter(&luaFreqPreset,
+      [](propertiesCommon *item, uint8_t arg) {
+          ((selectionParameter *)item)->value = arg;
+      },
+      luaFreqFolder.common.id);
+#if defined(RADIO_LR1121)
+  registerParameter(&luaFreqPresetDb,
+      [](propertiesCommon *item, uint8_t arg) {
+          ((selectionParameter *)item)->value = arg;
+      },
+      luaFreqFolder.common.id);
+#endif
 
   auto freqApplyCallback = [this](propertiesCommon *item, uint8_t arg) {
     commandParameter *cmd = (commandParameter *)item;
@@ -1042,11 +1130,11 @@ void TXModuleEndpoint::registerParameters()
     if (arg < lcsCancel)
     {
       freqApplyLastLcsPoll = millis();
-      if (connectionState != connected)
-      {
-        sendCommandResponse(cmd, lcsIdle, "No link");
-        return;
-      }
+      // No connectionState gate — staging is valid even when disconnected
+      // because both sides revert to rendezvous on watchdog/boot, so any
+      // "misfired" Apply is self-correcting. Blocking Apply on !connected
+      // was trapping the user with no way to recover from the Lua menu
+      // after a failed swap.
       uint8_t idx = luaFreqPreset.value;
       const fhss_config_t *src = FHSSgetCompileTimeDomain(idx);
       if (src == nullptr)
@@ -1065,7 +1153,33 @@ void TXModuleEndpoint::registerParameters()
       while (n < FHSS_FREQ_NAME_MAXLEN - 1 && src->domain[n]) { params.name[n] = src->domain[n]; n++; }
       params.name[n] = '\0';
 
+#if defined(RADIO_LR1121)
+      // PR 7: stage both bands as one atomic record. The "High Band"
+      // selector chooses which dualband preset to carry. We always
+      // pass dbParams (non-null) so the staged config is a complete
+      // snapshot of both bands — makes the swap atomic and the RX
+      // handler uniform regardless of which band changed.
+      uint8_t dbIdx = luaFreqPresetDb.value;
+      const fhss_config_t *dbSrc = FHSSgetCompileTimeDomainDb(dbIdx);
+      FHSSFreqParams dbParams{};
+      bool haveDb = (dbSrc != nullptr);
+      if (haveDb)
+      {
+        dbParams.freq_start   = dbSrc->freq_start;
+        dbParams.freq_stop    = dbSrc->freq_stop;
+        dbParams.freq_count   = (uint8_t)dbSrc->freq_count;
+        dbParams.sync_channel = (uint8_t)(dbSrc->freq_count / 2);
+        size_t m = 0;
+        while (m < FHSS_FREQ_NAME_MAXLEN - 1 && dbSrc->domain[m])
+        {
+            dbParams.name[m] = dbSrc->domain[m]; m++;
+        }
+        dbParams.name[m] = '\0';
+      }
+      if (!FHSSbuildConfig(staged, &params, OtaGetUidSeed(), haveDb ? &dbParams : nullptr))
+#else
       if (!FHSSbuildConfig(staged, &params, OtaGetUidSeed()))
+#endif
       {
         sendCommandResponse(cmd, lcsIdle, "Build fail");
         return;
@@ -1084,11 +1198,17 @@ void TXModuleEndpoint::registerParameters()
   };
 
   registerParameter(&luaFreqApply,  freqApplyCallback, luaFreqFolder.common.id);
-  registerParameter(&luaFreqStatus, nullptr,           luaFreqFolder.common.id);
 
   // Seed the preset selector to the compile-time domain so the
   // displayed default matches what the radio is actually on.
   luaFreqPreset.value = firmwareOptions.domain;
+  // PR 7: seed high-band selector from the compile-time DB default.
+  // Index 0 = ISM2G4, 1 = CE_LBT. Matches the picker in FHSS.cpp init.
+  #if defined(Regulatory_Domain_EU_CE_2400)
+    luaFreqPresetDb.value = 1;
+  #else
+    luaFreqPresetDb.value = 0;
+  #endif
 #endif
 
   registerParameter(&luaInfo);
@@ -1156,22 +1276,8 @@ void TXModuleEndpoint::updateParameters()
     setStringValue(&luaBackpackVersion, backpackVersion);
   }
   updateFolderNames();
-
-#if defined(RADIO_LR1121)
-  // runtime-freq-v2: refresh the Freq Config status line on every Lua
-  // poll so the user sees RDV → STAGED → SWITCHING → ACTIVE transitions
-  // live. Buffer is 28 bytes; keep output short ("ACTIVE: FCC915").
-  const FHSSFreqConfig *act = FHSSgetActiveConfig();
-  const char *stateStr = "?";
-  switch (FHSSgetRuntimeState())
-  {
-    case FHSS_STATE_RENDEZVOUS: stateStr = "RDV";    break;
-    case FHSS_STATE_STAGED:     stateStr = "STGD";   break;
-    case FHSS_STATE_SWITCHING:  stateStr = "SWTCH";  break;
-    case FHSS_STATE_ACTIVE:     stateStr = "ACTIVE"; break;
-    case FHSS_STATE_FALLBACK:   stateStr = "FALLBK"; break;
-  }
-  const char *name = (act != nullptr) ? act->params.name : "-";
-  snprintf(luaFreqStatusBuf, sizeof(luaFreqStatusBuf), "%s: %s", stateStr, name);
-#endif
+  // Note: runtime-freq-v2 FHSS state (RDV/STGD/SWTCH/ACTV/FALLBK + primary/
+  // high-band names) is surfaced live in the handset title bar via
+  // sendELRSstatus() — see above. No in-menu stringParameters needed;
+  // the handset's elrs.lua silently drops unsolicited 0x2B frames anyway.
 }

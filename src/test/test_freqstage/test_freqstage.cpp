@@ -154,26 +154,24 @@ void test_abort_round_trip(void)
 
 // --- Lead-time helper -----------------------------------------------------
 
-void test_lead_nonces_scales_with_tlm_denom(void)
+void test_lead_nonces_bounded_by_8bit_nonce_window(void)
 {
-    // Higher tlm denom → proportionally longer lead because Stubborn
-    // delivery + ACK both wait for telemetry slots.
-    uint32_t lead1   = FreqStageComputeLeadNonces(1);
-    uint32_t lead4   = FreqStageComputeLeadNonces(4);
-    uint32_t lead128 = FreqStageComputeLeadNonces(128);
-
-    // The floor is 500, so low denoms clamp. lead128 must clearly exceed
-    // the floor (headroom ensures this).
-    TEST_ASSERT_GREATER_THAN_UINT32(lead1, lead128);
-    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(500, lead1);
-    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(500, lead4);
+    // Lead must stay within the wrap-aware 8-bit window (<128) because
+    // ELRS OtaNonce is uint8_t. Our cap is 120 packets.
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32(120, FreqStageComputeLeadNonces(0));
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32(120, FreqStageComputeLeadNonces(1));
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32(120, FreqStageComputeLeadNonces(4));
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32(120, FreqStageComputeLeadNonces(128));
+    // High tlm denoms get clamped to the ceiling (otherwise formula
+    // would exceed the 8-bit window).
+    TEST_ASSERT_EQUAL_UINT32(120, FreqStageComputeLeadNonces(128));
 }
 
-void test_lead_nonces_floor_holds_at_denom_zero(void)
+void test_lead_nonces_floor_holds(void)
 {
-    // Defensive: denom == 0 would otherwise zero out the formula.
-    uint32_t lead = FreqStageComputeLeadNonces(0);
-    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(500, lead);
+    // Even at tlmDenom=0 or 1 the floor keeps lead >= 60 packets.
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(60, FreqStageComputeLeadNonces(0));
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(60, FreqStageComputeLeadNonces(1));
 }
 
 // --- RX-side handler (protocol glue) --------------------------------------
@@ -291,8 +289,8 @@ int main(int, char**)
     RUN_TEST(test_ack_round_trip);
     RUN_TEST(test_ack_carries_status_codes);
     RUN_TEST(test_abort_round_trip);
-    RUN_TEST(test_lead_nonces_scales_with_tlm_denom);
-    RUN_TEST(test_lead_nonces_floor_holds_at_denom_zero);
+    RUN_TEST(test_lead_nonces_bounded_by_8bit_nonce_window);
+    RUN_TEST(test_lead_nonces_floor_holds);
     RUN_TEST(test_rx_handle_stage_good_path);
     RUN_TEST(test_rx_handle_stage_duplicate_is_idempotent);
     RUN_TEST(test_rx_handle_stage_rejects_stale_epoch);

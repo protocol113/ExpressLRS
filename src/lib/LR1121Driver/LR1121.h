@@ -33,6 +33,14 @@ public:
     ////////////////Configuration Functions/////////////
     LR1121Driver();
     bool Begin(uint32_t minimumFrequency, uint32_t maximumFrequency);
+    // Re-run image-rejection calibration for a new (narrow) band range.
+    // Must be called outside ISR context — issues an SPI command and
+    // briefly holds the chip BUSY for ~3.5 ms (we WaitOnBusy before
+    // returning). Defaults to Radio_All to preserve boot-path behavior;
+    // runtime band-swap path passes SX12XX_Radio_1 to only calibrate the
+    // sub-GHz chip on dual-band targets.
+    void CalibrateImageForRange(uint32_t minimumFrequency, uint32_t maximumFrequency,
+                                SX12XX_Radio_Number_t radioNumber = SX12XX_Radio_All);
     void End();
     void SetTxIdleMode() { SetMode(LR1121_MODE_FS, SX12XX_Radio_All); }; // set Idle mode used when switching from RX to TX
     void Config(uint8_t bw, uint8_t sf, uint8_t cr, uint32_t freq,
