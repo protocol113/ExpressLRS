@@ -12,7 +12,9 @@
 #endif
 #define FreqCorrectionMin (-FreqCorrectionMax)
 
-#if defined(RADIO_LR1121)
+#if defined(RADIO_LR1121) || defined(UNIT_TEST)
+// LR1121 takes Hz directly; unit tests use identity so FREQ_STEP (a
+// radio-driver constant) doesn't need to be resolvable in the native env.
 #define FREQ_HZ_TO_REG_VAL(freq) (freq)
 #define FREQ_SPREAD_SCALE 1
 #else
@@ -124,8 +126,17 @@ FHSSRuntimeState      FHSSgetRuntimeState(void);
 // Stage a built config. The staged pointer must remain valid until the
 // epoch is reached (typically a slot inside the pool).
 //   epochNonce: future OtaNonce at which both sides swap. Must be > current.
+//   requireAck: TX side passes true — TX will refuse to swap at epoch
+//               unless FHSSnotifyAckReceived(epochNonce) has been called
+//               (proof that RX received STAGE). RX passes false because
+//               receiving STAGE IS the proof that TX tried to stage.
 // Returns false if cfg is null or cfg has zero-length sequence.
-bool FHSSstageConfig(const FHSSFreqConfig *cfg, uint32_t epochNonce);
+bool FHSSstageConfig(const FHSSFreqConfig *cfg, uint32_t epochNonce, bool requireAck = false);
+
+// TX-side: record that the RX acknowledged a STAGE for this epoch. Only
+// opens the ACK gate when epochNonce matches the currently staged epoch.
+// Late-arriving ACKs for already-swapped stages are harmless (ignored).
+void FHSSnotifyAckReceived(uint32_t epochNonce);
 
 // Call each packet with the current OtaNonce. If staged and currentNonce
 // has reached epoch, swaps activeConfig to the staged slot and arms the

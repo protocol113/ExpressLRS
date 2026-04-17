@@ -4,6 +4,7 @@
 #include "rxtx_intf.h"
 #include "config.h"
 #include "FHSS.h"
+#include "FreqStageNegotiation.h"
 #include "helpers.h"
 #include "hwTimer.h"
 #include "logging.h"

@@ -6,6 +6,11 @@
 #include "rxtx_intf.h"
 #include "config.h"
 #include "logging.h"
+#include "FHSS.h"
+#include "FreqStageMsg.h"
+#include "FreqStageNegotiation.h"
+#include "OTA.h"
+#include "common.h"
 
 bool RxTxEndpoint::handleRxTxMessage(const crsf_header_t *message)
 {
@@ -89,6 +94,72 @@ void RxTxEndpoint::handleMspSetRxTxConfig(crsf_ext_header_t *extMessage)
                 config.SetModelId(extMessage->payload[4]);
             }
             #endif
+            break;
+
+        // runtime-freq-v2: the RX handles STAGE (build + stage + ack back).
+        // TX handles STAGE_ACK (notify the FHSS ack gate). ABORT is bi-directional.
+        case MSP_ELRS_RXTX_CONFIG_SUBCMD::FREQ_STAGE:
+            #if defined(TARGET_RX)
+            {
+                FreqStageMsg stageMsg{};
+                FreqStageAckStatus status = FreqStageRxHandleStage(
+                    mspPayload, payloadLen,
+                    OtaGetUidSeed(),
+                    OtaNonce,
+                    &stageMsg);
+
+                // Echo ACK with either OK + the epoch we accepted, or the
+                // error code. TX uses this to open its ACK gate on the
+                // stored staged epoch.
+                FreqStageAck ack{};
+                ack.schema_version = FREQ_STAGE_SCHEMA_VERSION;
+                ack.status         = (uint8_t)status;
+                ack.epoch_nonce    = stageMsg.epoch_nonce;
+                uint8_t ackBuf[FREQ_ACK_WIRE_LEN];
+                if (encodeFreqAck(&ack, ackBuf, sizeof(ackBuf)) == FREQ_ACK_WIRE_LEN)
+                {
+                    mspPacket_t out;
+                    out.reset();
+                    out.makeResponse();
+                    out.function = MSP_ELRS_RXTX_CONFIG;
+                    out.addByte((uint8_t)MSP_ELRS_RXTX_CONFIG_SUBCMD::FREQ_STAGE_ACK);
+                    for (uint8_t i = 0; i < FREQ_ACK_WIRE_LEN; i++) out.addByte(ackBuf[i]);
+                    crsfRouter.AddMspMessage(&out, extMessage->orig_addr, getDeviceId());
+                }
+            }
+            #endif
+            break;
+
+        case MSP_ELRS_RXTX_CONFIG_SUBCMD::FREQ_STAGE_ACK:
+            #if defined(TARGET_TX)
+            {
+                FreqStageAck ack{};
+                if (decodeFreqAck(mspPayload, payloadLen, &ack))
+                {
+                    if (ack.status == FREQ_ACK_OK)
+                    {
+                        FHSSnotifyAckReceived(ack.epoch_nonce);
+                    }
+                    else
+                    {
+                        // RX rejected the stage — abort locally so we don't
+                        // sit staged forever or swap to a config RX won't follow.
+                        DBGLN("FREQ_STAGE rejected by RX, status=%u", ack.status);
+                        FHSSabortStagedConfig();
+                    }
+                }
+            }
+            #endif
+            break;
+
+        case MSP_ELRS_RXTX_CONFIG_SUBCMD::FREQ_ABORT:
+            {
+                FreqAbort abort{};
+                if (decodeFreqAbort(mspPayload, payloadLen, &abort))
+                {
+                    FHSSabortStagedConfig();
+                }
+            }
             break;
 
         default:

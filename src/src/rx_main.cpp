@@ -775,6 +775,11 @@ void ICACHE_RAM_ATTR HWtimerCallbackTock()
     sendImmediateRC();
 
     OtaNonce++;
+    // runtime-freq-v2: MUST run before HandleFHSS() — that function reads
+    // the hop frequency for the post-epoch slot from activeConfig, so the
+    // pointer swap has to happen first or the RX will program the radio
+    // for the old frequency and miss the first post-epoch packet.
+    FHSSactivateIfEpochReached(OtaNonce);
     HandleFHSS();
     updateDiversity();
     bool tlmSent = HandleSendDataDl();
@@ -1169,6 +1174,11 @@ bool ICACHE_RAM_ATTR ProcessRFPacket(SX12xxDriverCommon::rx_status const status)
     // Extend sync duration since we've received a packet at this rate
     // but do not extend it indefinitely
     RFmodeCycleMultiplier = RFmodeCycleMultiplierSlow;
+
+    // runtime-freq-v2: CRC passed, type dispatched successfully, LQ
+    // credited — the link is genuinely carrying traffic on the current
+    // config. Confirms SWITCHING→ACTIVE and feeds the fallback watchdog.
+    FHSSnotifyValidPacket();
 
 #if defined(DEBUG_RX_SCOREBOARD)
     if (otaPktPtr->std.type != PACKET_TYPE_SYNC) DBGW(connectionHasModelMatch ? 'R' : 'r');
@@ -1638,6 +1648,12 @@ static void EnterBindingMode()
         return;
     }
 
+    // runtime-freq-v2: clear any pending stage and the duplicate-detection
+    // cache. The new UID will reseed FHSS — a stale STAGE or last-epoch
+    // marker from the previous binding would point at an invalid config.
+    FHSSabortStagedConfig();
+    FreqStageRxResetDuplicateCache();
+
     // Any method of entering bind resets a loan
     // Model can be reloaned immediately by binding now
     config.ReturnLoan();
@@ -2041,6 +2057,12 @@ void loop()
 #endif
 {
     unsigned long now = millis();
+
+    // runtime-freq-v2: tick the fallback watchdog at ms granularity. Zero
+    // work when no swap is in flight.
+    static uint32_t lastFhssTick = 0;
+    FHSSwatchdogTick(lastFhssTick == 0 ? 0 : now - lastFhssTick);
+    lastFhssTick = now;
 
     if (DataUlReceiver.HasFinishedData())
     {

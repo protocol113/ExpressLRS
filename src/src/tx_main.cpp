@@ -241,6 +241,9 @@ static bool ICACHE_RAM_ATTR ProcessDownlinkPacket(SX12xxDriverCommon::rx_status 
 
   LastTLMpacketRecv_Ms = millis();
   LqTQly.add();
+  // runtime-freq-v2: valid telemetry proves the new config is carrying
+  // traffic. Confirms SWITCHING→ACTIVE and feeds the fallback watchdog.
+  FHSSnotifyValidPacket();
 
   Radio.CheckForSecondPacket();
   if (Radio.hasSecondRadioGotData)
@@ -645,6 +648,10 @@ void ICACHE_RAM_ATTR SendRCdataToRF()
 void ICACHE_RAM_ATTR nonceAdvance()
 {
   OtaNonce++;
+  // runtime-freq-v2: swap FHSS config if staged epoch has been reached.
+  // No-op in the common case (null check + nonce compare). Must run
+  // before any code that reads the hop frequency for the post-epoch slot.
+  FHSSactivateIfEpochReached(OtaNonce);
   if ((OtaNonce + 1) % ExpressLRS_currAirRate_Modparams->FHSShopInterval == 0)
   {
     ++FHSSptr;
@@ -683,7 +690,13 @@ void ICACHE_RAM_ATTR timerCallback()
 
   // Nonce advances on every timer tick
   if (!InBindingMode)
+  {
     OtaNonce++;
+    // runtime-freq-v2: mirror of nonceAdvance's epoch check for the
+    // non-binding timer path — without it, staged swaps on an active
+    // link would never fire.
+    FHSSactivateIfEpochReached(OtaNonce);
+  }
 
   // If HandleTLM has started Receive mode, TLM packet reception should begin shortly
   // Skip transmitting on this slot
@@ -1007,6 +1020,11 @@ static void EnterBindingMode()
 {
   if (InBindingMode)
       return;
+
+  // runtime-freq-v2: rebind invalidates any pending stage (new UID reseeds
+  // the FHSS sequence). Clear explicitly so a late STAGE after rebind
+  // doesn't resurrect stale state.
+  FHSSabortStagedConfig();
 
   // Disable the TX timer and wait for any TX to complete
   hwTimer::stop();
@@ -1497,6 +1515,12 @@ void setup()
 void loop()
 {
   uint32_t now = millis();
+
+  // runtime-freq-v2: tick the fallback watchdog at ms granularity. In the
+  // common case (no swap in flight) this is a zero-work early-return.
+  static uint32_t lastFhssTick = 0;
+  FHSSwatchdogTick(lastFhssTick == 0 ? 0 : now - lastFhssTick);
+  lastFhssTick = now;
 
   HandleUARTout(); // Only used for non-CRSF output
 

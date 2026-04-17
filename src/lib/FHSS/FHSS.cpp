@@ -240,6 +240,8 @@ static const FHSSFreqConfig *g_activeConfig     = nullptr;
 static const FHSSFreqConfig *g_stagedConfig     = nullptr;
 static uint32_t              g_switchEpochNonce = 0;
 static bool                  g_switchArmed      = false;
+static bool                  g_stageRequiresAck = false;  // TX sets true; RX leaves false
+static bool                  g_ackReceived      = false;  // set by FHSSnotifyAckReceived
 static uint32_t              g_msSinceSwap      = 0;
 static bool                  g_watchdogArmed    = false;
 static FHSSRuntimeState      g_runtimeState     = FHSS_STATE_RENDEZVOUS;
@@ -314,15 +316,26 @@ static void initRendezvousFromLegacy(uint32_t seed)
     // swap. Boot state is already consistent.
 }
 
-bool FHSSstageConfig(const FHSSFreqConfig *cfg, uint32_t epochNonce)
+bool FHSSstageConfig(const FHSSFreqConfig *cfg, uint32_t epochNonce, bool requireAck)
 {
     if (cfg == nullptr) return false;
     if (cfg->band_count == 0) return false;
     g_stagedConfig     = cfg;
     g_switchEpochNonce = epochNonce;
     g_switchArmed      = true;
+    g_stageRequiresAck = requireAck;
+    g_ackReceived      = false;  // fresh stage — any prior ack doesn't count
     g_runtimeState     = FHSS_STATE_STAGED;
     return true;
+}
+
+void FHSSnotifyAckReceived(uint32_t epochNonce)
+{
+    // Only honor the ACK if it matches the currently staged epoch. This
+    // rejects stale ACKs for stages that already swapped or were aborted.
+    if (!g_switchArmed) return;
+    if (epochNonce != g_switchEpochNonce) return;
+    g_ackReceived = true;
 }
 
 void FHSSactivateIfEpochReached(uint32_t currentNonce)
@@ -331,9 +344,23 @@ void FHSSactivateIfEpochReached(uint32_t currentNonce)
     // Monotonic 32-bit compare; OtaNonce won't wrap in any realistic session.
     if (currentNonce < g_switchEpochNonce) return;
 
+    // ACK gate (TX side). If the stager required an ACK and it didn't
+    // arrive before epoch, abort rather than swap alone — this is the
+    // v1 Nomad failure fix. RX stages with requireAck=false because
+    // receiving STAGE IS the proof.
+    if (g_stageRequiresAck && !g_ackReceived)
+    {
+        g_stagedConfig  = nullptr;
+        g_switchArmed   = false;
+        g_runtimeState  = (g_activeConfig == g_rendezvousConfig)
+                          ? FHSS_STATE_RENDEZVOUS : FHSS_STATE_ACTIVE;
+        return;
+    }
+
     g_activeConfig  = g_stagedConfig;
     g_stagedConfig  = nullptr;
     g_switchArmed   = false;
+    g_ackReceived   = false;
     g_msSinceSwap   = 0;
     g_watchdogArmed = (g_activeConfig != g_rendezvousConfig);
     g_runtimeState  = FHSS_STATE_SWITCHING;
@@ -345,6 +372,7 @@ void FHSSrevertToRendezvous(void)
     g_activeConfig  = g_rendezvousConfig;
     g_stagedConfig  = nullptr;
     g_switchArmed   = false;
+    g_ackReceived   = false;
     g_watchdogArmed = false;
     g_msSinceSwap   = 0;
     if (g_rendezvousConfig != nullptr) mirrorLegacyGlobalsFromActive();
@@ -378,6 +406,7 @@ void FHSSabortStagedConfig(void)
 {
     g_stagedConfig = nullptr;
     g_switchArmed  = false;
+    g_ackReceived  = false;
     if (g_runtimeState == FHSS_STATE_STAGED)
     {
         g_runtimeState = (g_activeConfig == g_rendezvousConfig)

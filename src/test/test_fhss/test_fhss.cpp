@@ -357,6 +357,98 @@ void test_v2_stage_rejects_invalid(void)
                               "zero-length sequence must fail");
 }
 
+// --- ACK-gate tests (TX-side requireAck=true path) ------------------------
+
+static FHSSFreqConfig* stageBuilt(uint32_t seed)
+{
+    FHSSFreqConfig *stg = FHSSgetPoolSlot(FHSS_SLOT_STAGED);
+    FHSSFreqParams p = sampleParams();
+    FHSSbuildConfig(stg, &p, seed);
+    return stg;
+}
+
+void test_v2_ack_gate_blocks_swap_without_ack(void)
+{
+    bootRendezvous();
+    FHSSFreqConfig *stg = stageBuilt(1);
+    // TX-style stage: require ack before swap.
+    TEST_ASSERT_TRUE(FHSSstageConfig(stg, 1000, /*requireAck=*/true));
+
+    // Reach epoch without any FHSSnotifyAckReceived — must NOT swap.
+    FHSSactivateIfEpochReached(1000);
+    TEST_ASSERT_EQUAL_PTR(FHSSgetRendezvousConfig(), FHSSgetActiveConfig());
+    TEST_ASSERT_NULL(FHSSgetStagedConfig());
+    // State reverts to RENDEZVOUS because we were never ACTIVE.
+    TEST_ASSERT_EQUAL(FHSS_STATE_RENDEZVOUS, FHSSgetRuntimeState());
+}
+
+void test_v2_ack_gate_allows_swap_with_matching_ack(void)
+{
+    bootRendezvous();
+    FHSSFreqConfig *stg = stageBuilt(2);
+    FHSSstageConfig(stg, 1000, /*requireAck=*/true);
+
+    FHSSnotifyAckReceived(1000);
+    FHSSactivateIfEpochReached(1000);
+    TEST_ASSERT_EQUAL_PTR(stg, FHSSgetActiveConfig());
+    TEST_ASSERT_EQUAL(FHSS_STATE_SWITCHING, FHSSgetRuntimeState());
+}
+
+void test_v2_ack_for_wrong_epoch_ignored(void)
+{
+    bootRendezvous();
+    FHSSFreqConfig *stg = stageBuilt(3);
+    FHSSstageConfig(stg, 1000, /*requireAck=*/true);
+
+    // Ack for the wrong epoch — must not open the gate.
+    FHSSnotifyAckReceived(500);
+    FHSSactivateIfEpochReached(1000);
+    TEST_ASSERT_EQUAL_PTR(FHSSgetRendezvousConfig(), FHSSgetActiveConfig());
+    TEST_ASSERT_EQUAL(FHSS_STATE_RENDEZVOUS, FHSSgetRuntimeState());
+}
+
+void test_v2_rx_style_no_ack_required(void)
+{
+    // RX stages with requireAck=false (the default). Receiving STAGE IS
+    // the proof — RX must swap at epoch unconditionally.
+    bootRendezvous();
+    FHSSFreqConfig *stg = stageBuilt(4);
+    FHSSstageConfig(stg, 1000);  // default requireAck=false
+
+    FHSSactivateIfEpochReached(1000);
+    TEST_ASSERT_EQUAL_PTR(stg, FHSSgetActiveConfig());
+}
+
+void test_v2_restage_resets_ack(void)
+{
+    bootRendezvous();
+    FHSSFreqConfig *stg = stageBuilt(5);
+    FHSSstageConfig(stg, 1000, /*requireAck=*/true);
+    FHSSnotifyAckReceived(1000);
+    // Re-stage with a new epoch — any prior ack must be cleared.
+    FHSSstageConfig(stg, 2000, /*requireAck=*/true);
+
+    FHSSactivateIfEpochReached(2000);
+    TEST_ASSERT_EQUAL_PTR(FHSSgetRendezvousConfig(), FHSSgetActiveConfig());
+    TEST_ASSERT_EQUAL(FHSS_STATE_RENDEZVOUS, FHSSgetRuntimeState());
+}
+
+void test_v2_late_ack_after_swap_ignored(void)
+{
+    bootRendezvous();
+    FHSSFreqConfig *stg = stageBuilt(6);
+    FHSSstageConfig(stg, 1000, /*requireAck=*/true);
+    FHSSnotifyAckReceived(1000);
+    FHSSactivateIfEpochReached(1000);
+    TEST_ASSERT_EQUAL(FHSS_STATE_SWITCHING, FHSSgetRuntimeState());
+
+    // A late duplicate ack arriving post-swap must be a no-op — the
+    // stage is already consumed.
+    FHSSnotifyAckReceived(1000);
+    TEST_ASSERT_EQUAL_PTR(stg, FHSSgetActiveConfig());
+    TEST_ASSERT_EQUAL(FHSS_STATE_SWITCHING, FHSSgetRuntimeState());
+}
+
 // Unity setup/teardown
 void setUp() {}
 void tearDown() {}
@@ -384,6 +476,12 @@ int main(int argc, char **argv)
     RUN_TEST(test_v2_revert_restores_rendezvous);
     RUN_TEST(test_v2_abort_staged_clears_without_swap);
     RUN_TEST(test_v2_stage_rejects_invalid);
+    RUN_TEST(test_v2_ack_gate_blocks_swap_without_ack);
+    RUN_TEST(test_v2_ack_gate_allows_swap_with_matching_ack);
+    RUN_TEST(test_v2_ack_for_wrong_epoch_ignored);
+    RUN_TEST(test_v2_rx_style_no_ack_required);
+    RUN_TEST(test_v2_restage_resets_ack);
+    RUN_TEST(test_v2_late_ack_after_swap_ignored);
     UNITY_END();
 
     return 0;
