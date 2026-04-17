@@ -366,9 +366,13 @@ void FHSSactivateIfEpochReached(uint32_t currentNonce)
     // arrive before epoch, abort rather than swap alone — this is the
     // v1 Nomad failure fix. RX stages with requireAck=false because
     // receiving STAGE IS the proof.
+    //
+    // NOTE: no DBGLN here. FHSSactivateIfEpochReached runs in timer-ISR
+    // context on both TX (timerCallback / nonceAdvance) and RX
+    // (HWtimerCallbackTock). Serial.printf is not ISR-safe on ESP32.
+    // Observable state lives in g_runtimeState + Lua status line.
     if (g_stageRequiresAck && !g_ackReceived)
     {
-        FREQ_DBG("ack-gate blocked swap at epoch=%u (no ack)", (unsigned)g_switchEpochNonce);
         g_stagedConfig  = nullptr;
         g_switchArmed   = false;
         g_runtimeState  = (g_activeConfig == g_rendezvousConfig)
@@ -376,7 +380,6 @@ void FHSSactivateIfEpochReached(uint32_t currentNonce)
         return;
     }
 
-    FREQ_DBG("swap active<-staged name=%s at nonce=%u", g_stagedConfig->params.name, (unsigned)currentNonce);
     g_activeConfig  = g_stagedConfig;
     g_stagedConfig  = nullptr;
     g_switchArmed   = false;
@@ -402,9 +405,9 @@ void FHSSrevertToRendezvous(void)
 
 void FHSSnotifyValidPacket(void)
 {
+    // Runs in RX/TX packet-reception ISR context; no Serial output here.
     if (g_runtimeState == FHSS_STATE_SWITCHING)
     {
-        FREQ_DBG("switching -> ACTIVE (first valid packet)");
         g_runtimeState = FHSS_STATE_ACTIVE;
     }
     g_msSinceSwap = 0;  // feed the watchdog

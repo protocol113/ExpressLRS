@@ -210,11 +210,12 @@ static commandParameter luaFreqApply = {
     STR_EMPTYSPACE
 };
 
-static commandParameter luaFreqRevert = {
-    {"Revert", CRSF_COMMAND},
-    lcsIdle,
-    STR_EMPTYSPACE
-};
+// NOTE: A Revert button is intentionally omitted for the first on-hardware
+// pass. Reverting after a swap has reached ACTIVE requires a symmetric
+// STAGE-of-rendezvous with requireAck=true (otherwise TX flips alone and
+// recreates the v1 Nomad failure). That's a follow-up PR. For now the
+// watchdog + re-Apply-different-preset are the only paths back; link is
+// protected either way.
 
 // Backing storage for the runtime status display. Refreshed by
 // updateParameters() on every Lua poll so the user sees state
@@ -1034,10 +1035,13 @@ void TXModuleEndpoint::registerParameters()
 
   auto freqApplyCallback = [this](propertiesCommon *item, uint8_t arg) {
     commandParameter *cmd = (commandParameter *)item;
-    static uint32_t lastLcsPoll;
+    // Instance-scoped so the timeout comparison in the else branch isn't
+    // comparing against a zero-initialized static on first press across
+    // session (matches the pattern in handleSimpleSendCmd).
+    static uint32_t freqApplyLastLcsPoll = 0;
     if (arg < lcsCancel)
     {
-      lastLcsPoll = millis();
+      freqApplyLastLcsPoll = millis();
       if (connectionState != connected)
       {
         sendCommandResponse(cmd, lcsIdle, "No link");
@@ -1073,29 +1077,14 @@ void TXModuleEndpoint::registerParameters()
       }
       sendCommandResponse(cmd, lcsExecuting, "Staging...");
     }
-    else if (arg == lcsCancel || (millis() - lastLcsPoll) > 2000)
+    else if (arg == lcsCancel || (millis() - freqApplyLastLcsPoll) > 2000)
     {
       sendCommandResponse(cmd, lcsIdle, STR_EMPTYSPACE);
     }
   };
 
-  auto freqRevertCallback = [this](propertiesCommon *item, uint8_t arg) {
-    commandParameter *cmd = (commandParameter *)item;
-    if (arg < lcsCancel)
-    {
-      FreqStageSendAbort();
-      FHSSrevertToRendezvous();
-      sendCommandResponse(cmd, lcsExecuting, "Reverted");
-    }
-    else
-    {
-      sendCommandResponse(cmd, lcsIdle, STR_EMPTYSPACE);
-    }
-  };
-
-  registerParameter(&luaFreqApply,  freqApplyCallback,  luaFreqFolder.common.id);
-  registerParameter(&luaFreqRevert, freqRevertCallback, luaFreqFolder.common.id);
-  registerParameter(&luaFreqStatus, nullptr,            luaFreqFolder.common.id);
+  registerParameter(&luaFreqApply,  freqApplyCallback, luaFreqFolder.common.id);
+  registerParameter(&luaFreqStatus, nullptr,           luaFreqFolder.common.id);
 
   // Seed the preset selector to the compile-time domain so the
   // displayed default matches what the radio is actually on.
